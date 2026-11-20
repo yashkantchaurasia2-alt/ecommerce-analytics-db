@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>E-Commerce Analytics DB</title>
+  <meta name="description" content="DBMS capstone: a BCNF MySQL database for an Indian e-commerce store, with every query and its result.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='32' cy='14' rx='22' ry='8' fill='%23c8553d'/%3E%3Cpath d='M10 14v36c0 4.4 9.8 8 22 8s22-3.6 22-8V14' fill='none' stroke='%23c8553d' stroke-width='5'/%3E%3Cpath d='M10 32c0 4.4 9.8 8 22 8s22-3.6 22-8' fill='none' stroke='%23c8553d' stroke-width='5'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#overview">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>E-Commerce <em>Analytics</em> DB</span>
+      </a>
+      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch light or dark theme">
+        <span class="sun" aria-hidden="true">☀</span><span class="moon" aria-hidden="true">☾</span>
+      </button>
+    </div>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#overview" data-tab="overview">Overview</a>
+      <a href="#schema" data-tab="schema">Schema &amp; ER</a>
+      <a href="#normalization" data-tab="normalization">Normalization</a>
+      <a href="#queries" data-tab="queries">Query Explorer</a>
+      <a href="#dashboard" data-tab="dashboard">Dashboard</a>
+      <a href="#tests" data-tab="tests">Testing</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============================ OVERVIEW ============================ -->
+    <section id="overview" class="panel">
+      <div class="hero">
+        <p class="eyebrow">DBMS Capstone · MySQL 8</p>
+        <h1>An online store's data, <span class="accent">normalized</span> and <span class="accent-2">analysed</span>.</h1>
+        <p class="lede">
+          A relational database for an Indian e-commerce platform: customers, products, stock,
+          orders, payments, coupons and deliveries. 12 tables in BCNF, realistic data across 7 months,
+          and SQL that finds repeat customers, best sellers and payment problems.
+        </p>
+        <div class="hero-actions">
+          <a class="btn primary" href="#queries">Browse the queries</a>
+          <a class="btn" href="#dashboard">See the dashboard</a>
+          <a class="btn ghost" href="https://github.com/yashkantchaurasia2-alt/ecommerce-analytics-db" rel="noopener">Source on GitHub ↗</a>
+        </div>
+      </div>
+
+      <div class="stat-grid" id="statGrid" aria-live="polite"></div>
+
+      <div class="cols-3">
+        <article class="card">
+          <h3>What's inside</h3>
+          <ul class="ticks">
+            <li>ER model and schema in BCNF</li>
+            <li>DDL, DML, DCL and TCL</li>
+            <li>Inner, outer, self and cross joins</li>
+            <li>Nested and correlated subqueries</li>
+            <li>UNION, INTERSECT, EXCEPT (MINUS)</li>
+            <li>5 views and 5 indexes with EXPLAIN</li>
+            <li>Window functions and recursive CTEs</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Stack</h3>
+          <dl class="kv">
+            <dt>Database</dt><dd>MySQL 8.0.31+</dd>
+            <dt>Scripts</dt><dd>Python 3 · pymysql</dd>
+            <dt>Tests</dt><dd id="testCountInline">automated checks</dd>
+            <dt>Data</dt><dd>50 customers · 40 products · 279 orders</dd>
+          </dl>
+        </article>
+        <article class="card">
+          <h3>How this site works</h3>
+          <p>
+            Nothing here talks to a live database. Every table on this site is the saved result of a query,
+            exported by the test runner after it rebuilt the database from scratch. So there are no passwords,
+            and the numbers are the ones the tests verified.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ============================ SCHEMA ============================ -->
+    <section id="schema" class="panel" hidden>
+      <div class="section-head">
+        <p class="eyebrow">Relational model</p>
+        <h2>Schema &amp; ER diagram</h2>
+        <p>12 entities, 15 foreign keys, 23 CHECK constraints. The three M:N relationships are resolved by associative tables.</p>
+      </div>
+      <div class="card er-card">
+        <div class="er-scroll"><pre class="mermaid" id="erDiagram">Loading diagram…</pre></div>
+        <p class="hint">Crow's foot: <code>||</code> exactly one · <code>|o</code> zero or one · <code>o{</code> zero or many · <code>|{</code> one or many. On a phone, scroll the diagram sideways.</p>
+      </div>
+      <div class="cols-2">
+        <article class="card">
+          <h3>Entities</h3>
+          <div class="table-wrap">
+            <table class="data">
+              <thead><tr><th>Table</th><th>Primary key</th><th>Stores</th></tr></thead>
+              <tbody>
+                <tr><td>customers</td><td>customer_id</td><td>Shoppers, optional referrer</td></tr>
+                <tr><td>customer_addresses</td><td>address_id</td><td>Delivery addresses</td></tr>
+                <tr><td>categories</td><td>category_id</td><td>3-level category tree</td></tr>
+                <tr><td>products</td><td>product_id</td><td>Catalogue, price and MRP</td></tr>
+                <tr><td>warehouses</td><td>warehouse_id</td><td>Fulfilment centres</td></tr>
+                <tr><td>inventory</td><td>(product_id, warehouse_id)</td><td>Stock per warehouse</td></tr>
+                <tr><td>orders</td><td>order_id</td><td>One purchase</td></tr>
+                <tr><td>order_items</td><td>(order_id, product_id)</td><td>Lines, price at purchase</td></tr>
+                <tr><td>payments</td><td>payment_id</td><td>Payment attempts</td></tr>
+                <tr><td>discounts</td><td>discount_id</td><td>Coupons</td></tr>
+                <tr><td>order_discounts</td><td>(order_id, discount_id)</td><td>Coupon used on an order</td></tr>
+                <tr><td>deliveries</td><td>delivery_id</td><td>Shipment (1:1 with order)</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article class="card">
+          <h3>Design decisions</h3>
+          <ul class="notes">
+            <li><b>Price at purchase.</b> <code>order_items.unit_price</code> keeps what the customer paid, so later price changes never rewrite history.</li>
+            <li><b>No stored totals.</b> Order totals are derived with <code>SUM(quantity × unit_price)</code>, so they can never drift out of sync.</li>
+            <li><b>Composite FK.</b> An order can only ship to an address belonging to the same customer, and the database enforces it.</li>
+            <li><b>Two self-references.</b> <code>categories.parent_category_id</code> (tree) and <code>customers.referred_by</code> (referrals), used for self joins and recursive CTEs.</li>
+            <li><b>1:1 delivery.</b> <code>UNIQUE(order_id)</code> on deliveries.</li>
+            <li><b>Safe defaults.</b> CASCADE for child rows, RESTRICT to protect history, SET NULL for referrers.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <!-- ============================ NORMALIZATION ============================ -->
+    <section id="normalization" class="panel" hidden>
+      <div class="section-head">
+        <p class="eyebrow">Design theory</p>
+        <h2>From one messy sheet to BCNF</h2>
+        <p>The full walkthrough with every functional dependency is in <code>docs/normalization.md</code>. Here is the short version.</p>
+      </div>
+      <ol class="steps">
+        <li class="step">
+          <span class="step-tag">UNF</span>
+          <div>
+            <h3>One big order sheet</h3>
+            <p>Customer details repeated on every order, product lists packed into one cell. Changing a phone number means editing many rows (update anomaly); a product can't exist until someone buys it (insert anomaly); deleting the only order loses the customer (delete anomaly).</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step-tag">1NF</span>
+          <div>
+            <h3>Atomic values</h3>
+            <p>One row per (order, product). Key: <code>(order_id, product)</code>. Note <code>unit_price</code> depends on the order <em>and</em> the product: the same phone case sold for ₹499 and ₹449.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step-tag">2NF</span>
+          <div>
+            <h3>No partial dependencies</h3>
+            <p><code>order_id → date, customer, …</code> and <code>product → category</code> depend on half the key, so <b>orders</b>, <b>products</b> and <b>order_items</b> become separate tables.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step-tag">3NF</span>
+          <div>
+            <h3>No transitive dependencies</h3>
+            <p><code>order_id → email → name, phone</code> and <code>coupon_code → percent</code> are pulled out into <b>customers</b>, <b>discounts</b> and <b>categories</b>. Payments get their own table because one order can have several attempts.</p>
+          </div>
+        </li>
+        <li class="step bcnf">
+          <span class="step-tag">BCNF</span>
+          <div>
+            <h3>Every determinant is a key</h3>
+            <p><code>courier_coverage(pincode, courier, hub)</code> with <code>hub → courier</code> is in 3NF (courier is prime) but <b>not</b> BCNF (hub is not a key). Split into <code>hubs(hub, courier)</code> and <code>pincode_hubs(pincode, hub)</code>: lossless, at the cost of one dependency no longer being checkable in a single table.</p>
+          </div>
+        </li>
+      </ol>
+      <div class="card callout">
+        <b>Result:</b> all 12 tables in the real schema are in BCNF. Every non-trivial FD has a key (PK or UNIQUE) on its left side.
+      </div>
+    </section>
+
+    <!-- ============================ QUERIES ============================ -->
+    <section id="queries" class="panel" hidden>
+      <div class="section-head">
+        <p class="eyebrow">Every query, every result</p>
+        <h2>Query Explorer</h2>
+        <p>Each query was run on a freshly built database by the test suite. Filter by syllabus topic, or search by ID (e.g. <code>W1</code>), keyword or SQL.</p>
+      </div>
+      <div class="explorer-tools">
+        <label class="search">
+          <span class="sr-only">Search queries</span>
+          <input id="querySearch" type="search" placeholder="Search: RANK, coupon, S7, LEFT JOIN…" autocomplete="off">
+        </label>
+        <div class="chips" id="componentChips" role="group" aria-label="Filter by topic"></div>
+      </div>
+      <p class="result-count" id="resultCount"></p>
+      <div id="queryList" class="query-list"></div>
+    </section>
+
+    <!-- ============================ DASHBOARD ============================ -->
+    <section id="dashboard" class="panel" hidden>
+      <div class="section-head">
+        <p class="eyebrow">Order &amp; payment analysis</p>
+        <h2>Dashboard</h2>
+        <p>Revenue counts successful payments on orders that were not cancelled. Product figures use item value before coupons.</p>
+      </div>
+      <div class="dash-grid">
+        <article class="card chart-card wide">
+          <h3>Monthly revenue <span class="sub">with 3-month moving average (W6)</span></h3>
+          <div class="chart-box"><canvas id="chartMonthly" aria-label="Monthly revenue chart" role="img"></canvas></div>
+        </article>
+        <article class="card chart-card">
+          <h3>Revenue by payment method <span class="sub">C2</span></h3>
+          <div class="chart-box"><canvas id="chartMethods" aria-label="Revenue by payment method chart" role="img"></canvas></div>
+        </article>
+        <article class="card chart-card">
+          <h3>Payment failure rate <span class="sub">C3</span></h3>
+          <div class="chart-box"><canvas id="chartFailures" aria-label="Payment failure rate chart" role="img"></canvas></div>
+        </article>
+        <article class="card chart-card wide">
+          <h3>Best sellers by units <span class="sub">B1</span></h3>
+          <div class="chart-box tall"><canvas id="chartTop" aria-label="Top 10 products by units chart" role="img"></canvas></div>
+        </article>
+        <article class="card chart-card">
+          <h3>Customer quartiles <span class="sub">NTILE(4), W7b</span></h3>
+          <div class="chart-box"><canvas id="chartQuartiles" aria-label="Customer quartile value chart" role="img"></canvas></div>
+        </article>
+        <article class="card">
+          <h3>Ties: ROW_NUMBER vs RANK vs DENSE_RANK <span class="sub">W1</span></h3>
+          <div class="table-wrap" id="tiesTable"></div>
+          <p class="hint">Two products tie on 37 units. RANK skips to 4 after the tie; DENSE_RANK goes to 3; ROW_NUMBER stays unique.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ============================ TESTS ============================ -->
+    <section id="tests" class="panel" hidden>
+      <div class="section-head">
+        <p class="eyebrow">Validation</p>
+        <h2>Testing</h2>
+        <p><code>python tests/run_tests.py</code> drops and rebuilds a test database, runs every SQL file in order, and checks the results, usually by comparing each answer with an independently written query.</p>
+      </div>
+      <div class="test-summary" id="testSummary"></div>
+      <div id="testSections" class="test-sections"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>DBMS Capstone · E-Commerce Order and Customer Analytics System · Sample data is fictional.</p>
+  </footer>
+
+  <noscript><p class="noscript">This site needs JavaScript to load the saved query results.</p></noscript>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

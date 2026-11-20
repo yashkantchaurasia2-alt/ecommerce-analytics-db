@@ -16,7 +16,7 @@ On top of the schema there are SQL files for:
 - analytics: repeat customers, best sellers, order and payment analysis
 - views, indexes, window functions and CTEs
 
-One test script rebuilds everything from scratch and runs 211 checks.
+One test script rebuilds everything from scratch and runs 213 checks.
 
 **Headline numbers:**
 
@@ -337,7 +337,7 @@ From W1 (Spigen and Portronics both sold 37 units):
 - It does not help a query on `method` alone.
 
 **29. How do you know the results are correct?**
-- `tests/run_tests.py` rebuilds the database and runs 211 checks.
+- `tests/run_tests.py` rebuilds the database and runs 213 checks.
 - Each important result is cross-checked against an independently written query. For example, EXCEPT = NOT EXISTS = LEFT JOIN IS NULL, and revenue by method = revenue by month = total.
 
 **30. Where are the passwords?**

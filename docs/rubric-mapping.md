@@ -2,7 +2,7 @@
 
 This page maps every syllabus component and every marking area to the exact file and query that proves it. Query IDs (J1, S7, W1, ...) are the `-- @query:` labels in the SQL files. Their saved results are in `outputs/<same file name>.md`.
 
-All evidence is checked automatically by `python tests/run_tests.py`: 211 checks, all passing.
+All evidence is checked automatically by `python tests/run_tests.py`: 213 checks, all passing.
 
 ---
 
@@ -44,7 +44,7 @@ All evidence is checked automatically by `python tests/run_tests.py`: 211 checks
 | Normalization & integrity constraints | 15 | `docs/normalization.md`; 23 CHECK, 15 FK, UNIQUE, NOT NULL, DEFAULT constraints in `sql/01`; **12 constraint-rejection tests** in `tests/run_tests.py` (plus the view's CHECK OPTION test) (negative price, negative stock, invalid status, non-existent customer, another customer's address, ...) |
 | SQL implementation & query development | 25 | `sql/02` – `sql/09` (DML, DCL, TCL, 13 joins, 15 subqueries, 11 set operations, 17 analytics queries) |
 | Advanced SQL, views & indexing | 15 | `sql/10` (5 views), `sql/11` (5 indexes, EXPLAIN before/after), `sql/12` (17 window-function and CTE queries) |
-| Testing, documentation & validation | 10 | `tests/run_tests.py` (211 checks, each result cross-checked against an independent query); `outputs/` (118 saved results); `README.md` |
+| Testing, documentation & validation | 10 | `tests/run_tests.py` (213 checks, each result cross-checked against an independent query); `outputs/` (118 saved results); `README.md` |
 | Demonstration & viva | 10 | `demo/demo_script.sql` (6-minute demo, tested to run cleanly and change no data); `docs/viva-notes.md` (every query explained + viva Q&A) |
 
 ## 4. How the evidence is verified

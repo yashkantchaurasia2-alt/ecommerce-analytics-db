@@ -21,6 +21,7 @@ DBMS capstone: a normalized (up to BCNF) relational database for an e-commerce p
 - `sql/` — numbered scripts: DDL, seed DML, DML ops, DCL, TCL, joins, subqueries, set ops, analytics, views, indexes, window functions/CTEs.
 - `docs/` — requirements, ER diagram (Mermaid), normalization 1NF→BCNF, rubric mapping, viva notes.
 - `demo/` — 5–7 minute live demo script. `tests/` — test runner. `outputs/` — saved query results. `tools/` — seed data generator.
+- `website/` — static showcase site; `tests/run_tests.py` writes `website/data/results.json` (no private columns). Published via `git subtree push --prefix website origin gh-pages`.
 - Every query needs a comment above it: which syllabus component it covers + the business question it answers.
 
 ## Hard rules

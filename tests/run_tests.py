@@ -23,11 +23,19 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 SQL_DIR = ROOT / "sql"
 
-RESULTS = []  # (status, name, detail)
+RESULTS = []          # (status, name, detail)
+RESULT_SECTIONS = []  # section name for each entry of RESULTS
+CURRENT_SECTION = ["SQL files"]
+
+
+def section(name):
+    CURRENT_SECTION[0] = name
+    print(f"{name} checks:")
 
 
 def record(ok, name, detail=""):
     RESULTS.append(("PASS" if ok else "FAIL", name, detail))
+    RESULT_SECTIONS.append(CURRENT_SECTION[0])
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"  ({detail})" if detail else ""))
 
 
@@ -1107,6 +1115,92 @@ def check_dcl(cfg, db):
     admin.close()
 
 
+# ---------------------------------------------------------------------------
+# Website data export (website/data/results.json)
+# The public website shows saved results only. Personal-looking columns are
+# dropped so that no email or phone number is ever published.
+# ---------------------------------------------------------------------------
+SITE_JSON = ROOT / "website" / "data" / "results.json"
+PRIVATE_COLUMNS = {"email", "phone", "date_of_birth", "line1", "pincode", "transaction_ref", "tracking_no"}
+COMPONENTS = {
+    "03": "DML", "04": "DCL", "05": "TCL", "06": "Joins", "07": "Subqueries",
+    "08": "Set operations", "09": "Analytics", "10": "Views", "11": "Indexes",
+    "12": "Window functions & CTEs",
+}
+SITE_DATA = {}
+
+
+def query_descriptions(path):
+    """title -> the comment block written above its '-- @query:' line."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out = {}
+    for i, line in enumerate(lines):
+        if not line.startswith("-- @query:"):
+            continue
+        block, j = [], i - 1
+        while j >= 0 and lines[j].startswith("--"):
+            text = lines[j][2:].strip()
+            if text and not set(text) <= set("-=") and not text.startswith("@query"):
+                block.append(text)
+            j -= 1
+        out[line[len("-- @query:"):].strip()] = " ".join(reversed(block))
+    return out
+
+
+def plain(v):
+    import datetime
+    import decimal
+    if isinstance(v, decimal.Decimal):
+        return float(v)
+    if isinstance(v, (datetime.date, datetime.datetime)):
+        return v.isoformat(sep=" ") if isinstance(v, datetime.datetime) else v.isoformat()
+    if isinstance(v, bytes):
+        return v.decode("utf-8", "replace")
+    return v
+
+
+def export_site_data():
+    queries = []
+    for path in sorted(SQL_DIR.glob("[0-9][0-9]_*.sql")):
+        descriptions = query_descriptions(path)
+        for title, stmt in split_sql(path.read_text(encoding="utf-8")):
+            if not title or title not in QUERY_RESULTS:
+                continue
+            cols, rows = QUERY_RESULTS[title]
+            keep = [i for i, c in enumerate(cols) if c.lower() not in PRIVATE_COLUMNS]
+            queries.append({
+                "id": title.split(" ")[0] if re.match(r"^[A-Z]\d", title) else "",
+                "title": title,
+                "file": path.name,
+                "component": COMPONENTS.get(path.name[:2], "Other"),
+                "description": descriptions.get(title, ""),
+                "sql": stmt,
+                "columns": [cols[i] for i in keep],
+                "rows": [[plain(r[i]) for i in keep] for r in rows[:100]],
+                "total_rows": len(rows),
+            })
+    er = (ROOT / "docs" / "er-diagram.md").read_text(encoding="utf-8")
+    m = re.search(r"```mermaid\n(.*?)```", er, re.S)
+    SITE_DATA.update({"queries": queries, "er_mermaid": m.group(1) if m else ""})
+
+    leaked = [q["title"] for q in queries if PRIVATE_COLUMNS & {c.lower() for c in q["columns"]}]
+    record(len(queries) == len(QUERY_RESULTS) and not leaked,
+           "every saved query exported for the website, without private columns",
+           f"{len(queries)} queries")
+    record(bool(SITE_DATA["er_mermaid"]), "ER diagram exported for the website")
+
+
+def write_site_json(passed, failed):
+    import json
+    sections = {}
+    for (status, name, detail), sec in zip(RESULTS, RESULT_SECTIONS):
+        sections.setdefault(sec, []).append({"status": status, "name": name, "detail": str(detail)})
+    SITE_DATA["tests"] = {"passed": passed, "failed": failed,
+                          "sections": [{"name": k, "checks": v} for k, v in sections.items()]}
+    SITE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    SITE_JSON.write_text(json.dumps(SITE_DATA, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
 def main():
     cfg = load_config()
     db = cfg["DB_TEST_NAME"]
@@ -1121,38 +1215,44 @@ def main():
     print("Running SQL files:")
     files_ok = run_sql_files(conn)
     if files_ok:
-        print("Schema checks:")
+        section("Schema")
         check_schema(conn, db)
-        print("Seed data checks:")
+        section("Seed data")
         check_seed(conn)
-        print("DML checks:")
+        section("DML")
         check_dml(conn)
-        print("TCL checks:")
+        section("TCL")
         check_tcl(conn)
-        print("Join checks:")
+        section("Join")
         check_joins()
-        print("Subquery checks:")
+        section("Subquery")
         check_subqueries(conn)
-        print("Set operation checks:")
+        section("Set operation")
         check_set_operations(conn)
-        print("Analytics checks:")
+        section("Analytics")
         check_analytics(conn)
-        print("View checks:")
+        section("View")
         check_views(conn)
-        print("Index checks:")
+        section("Index")
         check_indexes(conn)
-        print("Window function and CTE checks:")
+        section("Window function and CTE")
         check_window_ctes(conn)
-        print("DCL checks:")
+        section("DCL")
         check_dcl(cfg, db)
-        print("Constraint checks:")
+        section("Constraint")
         check_constraints(conn)
-        print("Demo script checks:")
+        section("Demo script")
         check_demo(conn)
     conn.close()
 
+    if files_ok:
+        section("Website export")
+        export_site_data()
+
     passed = sum(1 for s, _, _ in RESULTS if s == "PASS")
     failed = len(RESULTS) - passed
+    if files_ok:
+        write_site_json(passed, failed)
     print("\n" + "=" * 50)
     print(f"SUMMARY: {passed} passed, {failed} failed -> {'ALL PASS' if failed == 0 else 'FAIL'}")
     print("=" * 50)

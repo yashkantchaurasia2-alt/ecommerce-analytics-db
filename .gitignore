@@ -41,4 +41,4 @@ Thumbs.db
 desktop.ini
 
 # Local tool settings
-.claude/settings.local.json
+.claude/
