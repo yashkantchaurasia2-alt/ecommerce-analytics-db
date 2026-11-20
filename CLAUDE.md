@@ -14,7 +14,8 @@ DBMS capstone: a normalized (up to BCNF) relational database for an e-commerce p
 - Run the SQL files in `sql/` in numeric order (`01_` → `12_`); each file depends on the ones before it.
 - MySQL 8.0.46 runs inside WSL (Ubuntu 24.04), reached from Windows at 127.0.0.1:3306; no mysql client on Windows, so use Python (`pip install -r requirements.txt`). Ubuntu must be running.
 - Tests: `python tests/run_tests.py` drops and recreates a **test database only**, runs every `sql/` file in order, asserts row counts, constraint rejections, TCL rollback, views/indexes and analytics results, and prints PASS/FAIL.
-- Query results for the report are saved in `outputs/`.
+- Query results for the report are saved in `outputs/` by the test runner: any statement preceded by a `-- @query: <title>` comment line is written to `outputs/<sql file name>.md`.
+- `sql/02_dml_seed_data.sql` is generated: edit `tools/generate_seed.py` (fixed random seed, "today" = 2026-11-20) and re-run `python tools/generate_seed.py`, never hand-edit the SQL. Test expectations (row counts, boAt prices) depend on this data.
 
 ## Main folders
 - `sql/` — numbered scripts: DDL, seed DML, DML ops, DCL, TCL, joins, subqueries, set ops, analytics, views, indexes, window functions/CTEs.

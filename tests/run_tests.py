@@ -37,9 +37,12 @@ def record(ok, name, detail=""):
 # while ignoring semicolons inside quotes and comments. Comments are dropped.
 # ---------------------------------------------------------------------------
 def split_sql(text):
+    """Returns a list of (title, statement). title comes from a preceding
+    '-- @query: <title>' comment line, or is None."""
     statements, buf = [], []
     i, n = 0, len(text)
     quote = None
+    title = None
     while i < n:
         ch = text[i]
         nxt = text[i + 1] if i + 1 < n else ""
@@ -61,8 +64,12 @@ def split_sql(text):
             quote = ch
             buf.append(ch)
         elif ch == "-" and nxt == "-" and (i + 2 >= n or text[i + 2] in " \t\r\n"):
-            while i < n and text[i] != "\n":
-                i += 1
+            end = text.find("\n", i)
+            end = n if end == -1 else end
+            comment = text[i + 2:end].strip()
+            if comment.startswith("@query:"):
+                title = comment[len("@query:"):].strip()
+            i = end
             buf.append("\n")
             continue
         elif ch == "#":
@@ -78,15 +85,43 @@ def split_sql(text):
         elif ch == ";":
             stmt = "".join(buf).strip()
             if stmt:
-                statements.append(stmt)
+                statements.append((title, stmt))
+                title = None
             buf = []
         else:
             buf.append(ch)
         i += 1
     stmt = "".join(buf).strip()
     if stmt:
-        statements.append(stmt)
+        statements.append((title, stmt))
     return statements
+
+
+# ---------------------------------------------------------------------------
+# Saving query results to outputs/
+# ---------------------------------------------------------------------------
+OUTPUT_DIR = ROOT / "outputs"
+MAX_OUTPUT_ROWS = 60
+
+
+def fmt_cell(v):
+    if v is None:
+        return "NULL"
+    return str(v).replace("|", "\\|").replace("\n", " ")
+
+
+def to_markdown(title, sql, columns, rows):
+    lines = [f"## {title}", "", "```sql", sql, "```", ""]
+    lines.append(f"**Rows returned:** {len(rows)}" +
+                 (f" (showing first {MAX_OUTPUT_ROWS})" if len(rows) > MAX_OUTPUT_ROWS else ""))
+    lines.append("")
+    if columns:
+        lines.append("| " + " | ".join(columns) + " |")
+        lines.append("|" + "---|" * len(columns))
+        for r in rows[:MAX_OUTPUT_ROWS]:
+            lines.append("| " + " | ".join(fmt_cell(v) for v in r) + " |")
+    lines.append("")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -129,21 +164,30 @@ def rebuild_test_db(cfg):
 def run_sql_files(conn):
     files = sorted(SQL_DIR.glob("[0-9][0-9]_*.sql"))
     all_ok = True
+    OUTPUT_DIR.mkdir(exist_ok=True)
     for path in files:
         statements = split_sql(path.read_text(encoding="utf-8"))
+        saved = []
         with conn.cursor() as cur:
-            for idx, stmt in enumerate(statements, 1):
+            for idx, (title, stmt) in enumerate(statements, 1):
                 try:
                     cur.execute(stmt)
                     if cur.description:
-                        cur.fetchall()
+                        rows = cur.fetchall()
+                        if title:
+                            cols = [d[0] for d in cur.description]
+                            saved.append(to_markdown(title, stmt, cols, rows))
                 except pymysql.MySQLError as e:
                     snippet = " ".join(stmt.split())[:120]
                     record(False, f"run {path.name}", f"statement {idx}: {e.args} :: {snippet}")
                     all_ok = False
                     break
             else:
-                record(True, f"run {path.name}", f"{len(statements)} statements")
+                record(True, f"run {path.name}", f"{len(statements)} statements, {len(saved)} results saved")
+        if saved and all_ok:
+            header = (f"# Results of `sql/{path.name}`\n\n"
+                      "Saved automatically by `tests/run_tests.py` from a fresh test database.\n\n")
+            (OUTPUT_DIR / f"{path.stem}.md").write_text(header + "\n".join(saved), encoding="utf-8")
         if not all_ok:
             break
     return all_ok
@@ -287,6 +331,116 @@ def check_constraints(conn):
         conn.autocommit(True)
 
 
+def check_seed(conn):
+    """Row counts and data variety after 02_dml_seed_data.sql (and 03)."""
+    with conn.cursor() as cur:
+        exact = {"customers": 50, "products": 40, "categories": 23,
+                 "warehouses": 3, "discounts": 6}
+        for table, want in exact.items():
+            got = scalar(cur, f"SELECT COUNT(*) FROM {table}")
+            record(got == want, f"{table} has {want} rows", f"found {got}")
+
+        minimum = {"customer_addresses": 55, "orders": 250, "order_items": 400,
+                   "payments": 250, "order_discounts": 20, "deliveries": 200, "inventory": 80}
+        for table, want in minimum.items():
+            got = scalar(cur, f"SELECT COUNT(*) FROM {table}")
+            record(got >= want, f"{table} has >= {want} rows", f"found {got}")
+
+        months = scalar(cur, "SELECT COUNT(DISTINCT DATE_FORMAT(order_date, '%Y-%m')) FROM orders")
+        record(months >= 6, "orders span >= 6 months", f"{months} months")
+
+        methods = scalar(cur, "SELECT COUNT(DISTINCT method) FROM payments")
+        record(methods == 4, "all 4 payment methods used", f"{methods}")
+        for st in ("FAILED", "PENDING", "SUCCESS"):
+            got = scalar(cur, "SELECT COUNT(*) FROM payments WHERE status = %s", (st,))
+            record(got > 0, f"{st} payments exist", f"{got}")
+
+        dstat = scalar(cur, "SELECT COUNT(DISTINCT status) FROM deliveries")
+        record(dstat == 5, "all 5 delivery statuses present", f"{dstat}")
+        ostat = scalar(cur, "SELECT COUNT(DISTINCT status) FROM orders")
+        record(ostat == 5, "all 5 order statuses present", f"{ostat}")
+
+        zero = scalar(cur, "SELECT COUNT(*) FROM customers c WHERE NOT EXISTS "
+                           "(SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id)")
+        record(zero >= 5, "customers with zero orders exist", f"{zero}")
+        repeat = scalar(cur, "SELECT COUNT(*) FROM (SELECT customer_id FROM orders "
+                             "GROUP BY customer_id HAVING COUNT(*) > 1) t")
+        record(repeat >= 20, "repeat customers (>1 order) exist", f"{repeat}")
+        referred = scalar(cur, "SELECT COUNT(*) FROM customers WHERE referred_by IS NOT NULL")
+        record(referred >= 10, "referred customers exist", f"{referred}")
+        self_ref = scalar(cur, "SELECT COUNT(*) FROM customers WHERE referred_by = customer_id")
+        record(self_ref == 0, "no customer refers themselves")
+
+        depth3 = scalar(cur, "SELECT COUNT(*) FROM categories c JOIN categories p "
+                             "ON c.parent_category_id = p.category_id "
+                             "WHERE p.parent_category_id IS NOT NULL")
+        record(depth3 > 0, "category tree has 3 levels", f"{depth3} level-3 categories")
+
+        unsold = scalar(cur, "SELECT COUNT(*) FROM products p WHERE NOT EXISTS "
+                             "(SELECT 1 FROM order_items oi WHERE oi.product_id = p.product_id)")
+        record(unsold >= 2, "some products never sold", f"{unsold}")
+
+        no_items = scalar(cur, "SELECT COUNT(*) FROM orders o WHERE NOT EXISTS "
+                               "(SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id)")
+        record(no_items == 0, "every order has at least one item", f"{no_items} empty")
+
+        old_price = scalar(cur, "SELECT COUNT(*) FROM order_items oi JOIN products p "
+                                "USING (product_id) WHERE oi.unit_price <> p.price")
+        record(old_price > 0, "some items sold at an older price", f"{old_price} rows")
+
+        mismatched = scalar(cur, """
+            SELECT COUNT(*) FROM (
+                SELECT o.order_id,
+                       (SELECT SUM(oi.quantity * oi.unit_price) FROM order_items oi
+                         WHERE oi.order_id = o.order_id)
+                     - COALESCE((SELECT SUM(od.amount_saved) FROM order_discounts od
+                                  WHERE od.order_id = o.order_id), 0) AS expected,
+                       (SELECT SUM(p.amount) FROM payments p
+                         WHERE p.order_id = o.order_id AND p.status = 'SUCCESS') AS paid
+                FROM orders o) t
+            WHERE paid IS NOT NULL AND paid <> expected""")
+        record(mismatched == 0, "paid amount = items total - discount", f"{mismatched} mismatched")
+
+        cod_ref = scalar(cur, "SELECT COUNT(*) FROM payments WHERE method = 'COD' "
+                              "AND transaction_ref IS NOT NULL")
+        record(cod_ref == 0, "COD payments have no transaction ref")
+
+
+def check_dml(conn):
+    """Effects of 03_dml_operations.sql."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT sku, price FROM products WHERE brand = 'boAt' ORDER BY sku")
+        prices = {sku: float(p) for sku, p in cur.fetchall()}
+        want = {"BOAT-AD141": 1364.0, "BOAT-PB20K": 1574.0, "BOAT-RK450": 1574.0}
+        record(prices == want, "UPDATE raised boAt prices by 5%", str(prices))
+
+        confirmed = scalar(cur, "SELECT COUNT(*) FROM orders o JOIN payments p "
+                                "ON p.order_id = o.order_id "
+                                "WHERE o.status = 'CONFIRMED' AND p.method = 'UPI' "
+                                "AND p.status = 'SUCCESS' AND NOT EXISTS "
+                                "(SELECT 1 FROM deliveries d WHERE d.order_id = o.order_id)")
+        record(confirmed == 1, "UPDATE confirmed the pending UPI order", f"{confirmed}")
+        placed_paid = scalar(cur, "SELECT COUNT(*) FROM orders o JOIN payments p "
+                                  "ON p.order_id = o.order_id "
+                                  "WHERE o.status = 'PLACED' AND p.status = 'SUCCESS'")
+        record(placed_paid == 0, "no PLACED order has a successful payment")
+
+        low = scalar(cur, "SELECT COUNT(*) FROM inventory WHERE warehouse_id = 1 "
+                          "AND quantity < reorder_level")
+        record(low == 0, "UPDATE restocked Bhiwandi below-reorder rows", f"{low} left")
+        low_elsewhere = scalar(cur, "SELECT COUNT(*) FROM inventory WHERE quantity < reorder_level")
+        record(low_elsewhere > 0, "other warehouses still have low stock", f"{low_elsewhere}")
+
+        spam = scalar(cur, "SELECT COUNT(*) FROM customers WHERE email = 'spam.bot@example.in'")
+        record(spam == 0, "DELETE removed the spam customer")
+        coupon = scalar(cur, "SELECT COUNT(*) FROM discounts WHERE code = 'TEST50'")
+        record(coupon == 0, "DELETE removed the test coupon")
+
+        out = OUTPUT_DIR / "03_dml_operations.md"
+        record(out.exists() and out.read_text(encoding="utf-8").count("## ") == 7,
+               "7 SELECT results saved to outputs/03_dml_operations.md")
+
+
 def main():
     cfg = load_config()
     db = cfg["DB_TEST_NAME"]
@@ -303,6 +457,10 @@ def main():
     if files_ok:
         print("Schema checks:")
         check_schema(conn, db)
+        print("Seed data checks:")
+        check_seed(conn)
+        print("DML checks:")
+        check_dml(conn)
         print("Constraint checks:")
         check_constraints(conn)
     conn.close()
