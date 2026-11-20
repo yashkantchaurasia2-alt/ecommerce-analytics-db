@@ -229,6 +229,7 @@ FROM   vw_customer_lifetime_value
 WHERE  lifetime_value > 0
 ORDER  BY lifetime_value DESC, customer_id;
 
+-- Window functions (NTILE) + CTE | Business question: how big and how valuable is each customer quartile?
 -- @query: W7b NTILE(4) - size and value of each quartile
 WITH q AS (
     SELECT customer_id,

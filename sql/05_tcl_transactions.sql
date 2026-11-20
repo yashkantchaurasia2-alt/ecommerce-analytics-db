@@ -58,12 +58,14 @@ UPDATE orders SET status = 'CONFIRMED' WHERE order_id = @case1_order;
 
 COMMIT;
 
+-- TCL (COMMIT) | Business question: did the committed order reduce stock by exactly the ordered quantity?
 -- @query: Case 1 - stock AFTER COMMIT (Nord Buds -1, case -2)
 SELECT p.sku, i.warehouse_id, i.quantity
 FROM   inventory i JOIN products p ON p.product_id = i.product_id
 WHERE  p.sku IN ('ONP-NB2', 'SPG-CASE') AND i.warehouse_id = 3
 ORDER  BY p.sku;
 
+-- TCL (COMMIT) | Business question: were the order, items and payment all saved together?
 -- @query: Case 1 - the committed order
 SELECT o.order_id, o.status, oi.product_id, oi.quantity, oi.unit_price,
        p.method, p.status AS payment_status, p.amount
@@ -94,6 +96,7 @@ SET    quantity = quantity - 3
 WHERE  warehouse_id = 3
   AND  product_id = (SELECT product_id FROM products WHERE sku = 'BK-ATOMIC');
 
+-- TCL (uncommitted change) | Business question: what does the session see before COMMIT or ROLLBACK?
 -- @query: Case 2 - stock INSIDE the transaction (already reduced by 3)
 SELECT p.sku, i.quantity
 FROM   inventory i JOIN products p ON p.product_id = i.product_id
@@ -102,11 +105,13 @@ WHERE  p.sku = 'BK-ATOMIC' AND i.warehouse_id = 3;
 -- The payment gateway answers "FAILED", so the whole order is undone.
 ROLLBACK;
 
+-- TCL (ROLLBACK) | Business question: did ROLLBACK give the stock back after the failed payment?
 -- @query: Case 2 - stock AFTER ROLLBACK (back to the original value)
 SELECT p.sku, i.quantity
 FROM   inventory i JOIN products p ON p.product_id = i.product_id
 WHERE  p.sku = 'BK-ATOMIC' AND i.warehouse_id = 3;
 
+-- TCL (ROLLBACK) | Business question: did ROLLBACK remove the order completely?
 -- @query: Case 2 - the rolled-back order does not exist
 SELECT COUNT(*) AS orders_found
 FROM   orders
@@ -134,11 +139,13 @@ WHERE  warehouse_id = 3
   AND  product_id = (SELECT product_id FROM products WHERE sku = 'RDM-N13P')
   AND  quantity >= 500;
 
+-- TCL (stock check) | Business question: was there enough stock to reserve 500 units?
 -- @query: Case 3 - rows updated by the stock check (0 = not enough stock)
 SELECT ROW_COUNT() AS rows_updated;
 
 ROLLBACK;
 
+-- TCL (ROLLBACK) | Business question: is the stock unchanged and the order gone?
 -- @query: Case 3 - stock and orders after ROLLBACK (unchanged, no order)
 SELECT p.sku, i.quantity,
        (SELECT COUNT(*) FROM orders WHERE order_date = '2026-11-20 10:30:00') AS orders_found
@@ -179,6 +186,7 @@ WHERE  warehouse_id = 3
   AND  product_id = (SELECT product_id FROM products WHERE sku = 'SNY-XM5')
   AND  quantity >= 1;
 
+-- TCL (SAVEPOINT) | Business question: is the second item in stock?
 -- @query: Case 4 - rows updated for Sony (0 = out of stock)
 SELECT ROW_COUNT() AS rows_updated;
 
@@ -198,6 +206,7 @@ UPDATE orders SET status = 'CONFIRMED' WHERE order_id = @case4_order;
 
 COMMIT;
 
+-- TCL (ROLLBACK TO SAVEPOINT) | Business question: did only the out-of-stock item get undone?
 -- @query: Case 4 - committed order keeps only the JBL item
 SELECT oi.order_id, p.sku, oi.quantity, oi.unit_price
 FROM   order_items oi JOIN products p ON p.product_id = oi.product_id
@@ -212,11 +221,13 @@ SET autocommit = 0;
 
 UPDATE products SET price = price - 100 WHERE sku = 'PGN-KTL';
 
+-- TCL (SET autocommit = 0) | Business question: is the change visible before COMMIT?
 -- @query: Case 5 - kettle price after UPDATE with autocommit = 0 (not saved yet)
 SELECT sku, price FROM products WHERE sku = 'PGN-KTL';
 
 ROLLBACK;
 
+-- TCL (ROLLBACK with autocommit = 0) | Business question: did ROLLBACK restore the original price?
 -- @query: Case 5 - kettle price after ROLLBACK (original 699 is back)
 SELECT sku, price FROM products WHERE sku = 'PGN-KTL';
 
@@ -228,6 +239,7 @@ UPDATE warehouses SET city = 'Bengaluru Urban' WHERE warehouse_id = 3;
 -- so this ROLLBACK has nothing to undo.
 ROLLBACK;
 
+-- TCL (SET autocommit = 1) | Business question: can ROLLBACK undo an auto-committed change?
 -- @query: Case 5 - with autocommit = 1, ROLLBACK did not undo the change
 SELECT warehouse_id, city FROM warehouses WHERE warehouse_id = 3;
 
@@ -324,6 +336,7 @@ CALL sp_place_order(3, 'RDM-N13P', 1000, 3, 'CARD', 'SUCCESS', @call2);
 -- Call 3: stock is fine, but the payment fails -> ROLLBACK
 CALL sp_place_order(3, 'BK-ATOMIC', 1, 3, 'CARD', 'FAILED', @call3);
 
+-- TCL (stored procedure) | Business question: which of the three procedure calls committed and why?
 -- @query: sp_place_order results (only call 1 committed)
 SELECT 'Call 1: 2 x kettle, UPI SUCCESS'   AS scenario, @call1 AS result
 UNION ALL
@@ -331,6 +344,7 @@ SELECT 'Call 2: 1000 x Redmi, no stock',               @call2
 UNION ALL
 SELECT 'Call 3: 1 x Atomic Habits, payment FAILED',    @call3;
 
+-- TCL (stored procedure) | Business question: how many procedure orders survived?
 -- @query: Orders created at 12:00 by the procedure (only 1 survives)
 SELECT o.order_id, o.status, oi.product_id, oi.quantity
 FROM   orders o JOIN order_items oi ON oi.order_id = o.order_id

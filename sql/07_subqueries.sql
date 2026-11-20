@@ -124,6 +124,7 @@ ORDER  BY price
 LIMIT  10;
 
 -- (22, 23 = Fiction and Non-Fiction, the two Books sub-categories)
+-- Subqueries (ANY) | Business question: which non-book products cost less than at least one book?
 -- @query: S6b ANY - non-book products cheaper than at least one book
 SELECT product_name, price
 FROM   products

@@ -122,6 +122,7 @@ SET DEFAULT ROLE 'r_analyst'     TO 'analyst'@'localhost';
 SET @sql = CONCAT('GRANT DELETE ON `', @db, '`.orders TO r_order_clerk');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- DCL (SHOW GRANTS) | Business question: what could the clerk do before the mistake was fixed?
 -- @query: r_order_clerk grants BEFORE revoke (note DELETE on orders)
 SHOW GRANTS FOR 'r_order_clerk';
 
@@ -129,6 +130,7 @@ SHOW GRANTS FOR 'r_order_clerk';
 SET @sql = CONCAT('REVOKE DELETE ON `', @db, '`.orders FROM r_order_clerk');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- DCL (REVOKE check) | Business question: is DELETE on orders really gone after REVOKE?
 -- @query: r_order_clerk grants AFTER revoke (DELETE is gone)
 SHOW GRANTS FOR 'r_order_clerk';
 
@@ -140,9 +142,11 @@ SHOW GRANTS FOR 'r_order_clerk';
 -- @query: Effective privileges of db_admin
 SHOW GRANTS FOR 'db_admin'@'localhost' USING 'r_admin';
 
+-- DCL (SHOW GRANTS ... USING) | Business question: what can the analyst actually do once the role is active?
 -- @query: Effective privileges of analyst
 SHOW GRANTS FOR 'analyst'@'localhost' USING 'r_analyst';
 
+-- DCL (roles) | Business question: which user holds which role?
 -- @query: Which role is assigned to which user
 SELECT from_user AS role_name,
        to_user   AS user_name,

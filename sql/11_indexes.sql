@@ -32,6 +32,7 @@
 -- ---------------------------------------------------------------------
 -- I0. Indexes that already exist on orders (PRIMARY + FK indexes)
 -- ---------------------------------------------------------------------
+-- Indexing (existing indexes) | Business question: which indexes did MySQL already create for the PK and FKs?
 -- @query: I0 indexes on orders BEFORE this file (PK and FK indexes only)
 SELECT index_name, seq_in_index, column_name, non_unique
 FROM   information_schema.statistics
@@ -51,6 +52,7 @@ WHERE  status = 'PENDING';
 CREATE INDEX idx_payments_status_method ON payments (status, method);
 ANALYZE TABLE payments;
 
+-- Indexing (EXPLAIN after) | Business question: does the pending-payments query use the new index?
 -- @query: X1 EXPLAIN AFTER - pending payments (index lookup)
 EXPLAIN SELECT payment_id, order_id, method, amount
 FROM   payments
@@ -74,6 +76,7 @@ WHERE  order_date BETWEEN '2026-11-01' AND '2026-11-07 23:59:59';
 CREATE INDEX idx_orders_date ON orders (order_date);
 ANALYZE TABLE orders;
 
+-- Indexing (EXPLAIN after) | Business question: does the date-range query use the new index?
 -- @query: X2 EXPLAIN AFTER - orders in one week (index range scan)
 EXPLAIN SELECT order_id, customer_id, order_date
 FROM   orders
@@ -97,6 +100,7 @@ LIMIT  1;
 CREATE INDEX idx_orders_customer_date ON orders (customer_id, order_date);
 ANALYZE TABLE orders;
 
+-- Indexing (EXPLAIN after) | Business question: does the composite index remove the sort step?
 -- @query: X3 EXPLAIN AFTER - latest order of one customer (no filesort)
 EXPLAIN SELECT order_id, order_date, status
 FROM   orders
@@ -131,6 +135,7 @@ CREATE INDEX idx_deliveries_status ON deliveries (status);
 -- 03_dml_operations.sql and brand reports filter products by brand
 CREATE INDEX idx_products_brand ON products (brand);
 
+-- Indexing (catalog) | Business question: which indexes did this file add, on which columns?
 -- @query: I1 all indexes created in this file
 SELECT table_name,
        index_name,
@@ -141,6 +146,7 @@ WHERE  table_schema = DATABASE()
 GROUP  BY table_name, index_name
 ORDER  BY table_name, index_name;
 
+-- Indexing (trade-off) | Business question: which tables pay the highest write cost for their indexes?
 -- @query: I2 number of indexes per table (more indexes = slower writes)
 SELECT table_name,
        COUNT(DISTINCT index_name) AS indexes

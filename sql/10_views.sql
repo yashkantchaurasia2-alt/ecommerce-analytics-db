@@ -172,6 +172,7 @@ WITH CASCADED CHECK OPTION;
 -- Using the views
 -- =====================================================================
 
+-- Views (querying a view) | Business question: what are the 10 most recent orders and their payment/delivery state?
 -- @query: V1 vw_order_summary - the 10 most recent orders
 SELECT order_id, order_date, customer, items, gross_value, discount,
        net_paid, payment_status, delivery_status
@@ -179,12 +180,14 @@ FROM   vw_order_summary
 ORDER  BY order_date DESC
 LIMIT  10;
 
+-- Views (querying a view) | Business question: which products earn the most, and how much stock is left?
 -- @query: V2 vw_product_sales - top 10 products by revenue, with stock left
 SELECT product_name, category_name, units_sold, gross_revenue, stock_left
 FROM   vw_product_sales
 ORDER  BY gross_revenue DESC
 LIMIT  10;
 
+-- Views + GROUP BY | Business question: how many customers and how much value are in each segment?
 -- @query: V3 vw_customer_lifetime_value - customers per segment
 SELECT segment,
        COUNT(*)                    AS customers,
@@ -194,12 +197,14 @@ FROM   vw_customer_lifetime_value
 GROUP  BY segment
 ORDER  BY total_value DESC;
 
+-- Views (querying a view) | Business question: who are our 5 most valuable customers?
 -- @query: V3b vw_customer_lifetime_value - top 5 customers
 SELECT customer_id, full_name, city, orders_placed, lifetime_value, segment
 FROM   vw_customer_lifetime_value
 ORDER  BY lifetime_value DESC
 LIMIT  5;
 
+-- Views + WHERE | Business question: which customers have waited more than 3 days for delivery?
 -- @query: V4 vw_pending_deliveries - waiting more than 3 days
 SELECT order_id, order_day, days_waiting, customer, delivery_status, courier
 FROM   vw_pending_deliveries
@@ -214,6 +219,7 @@ ORDER  BY days_waiting DESC;
 -- ---------------------------------------------------------------------
 UPDATE vw_active_products SET price = 649 WHERE sku = 'PGN-KTL';
 
+-- Views (updatable view) | Business question: did the UPDATE through the view reach the products table?
 -- @query: V5 price changed through the view is visible in the base table
 SELECT sku, price FROM products WHERE sku = 'PGN-KTL';
 
@@ -252,9 +258,11 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = CONCAT('GRANT SELECT, UPDATE ON `', @db, '`.vw_active_products TO r_order_clerk');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- DCL on views | Business question: is the analyst now limited to views only?
 -- @query: V6 r_analyst grants after the change (views only)
 SHOW GRANTS FOR 'r_analyst';
 
+-- Views (catalog) | Business question: which views exist, and which one is updatable?
 -- @query: V7 all views in this database
 SELECT table_name AS view_name, is_updatable, check_option, security_type
 FROM   information_schema.views
