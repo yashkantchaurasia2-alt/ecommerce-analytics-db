@@ -901,6 +901,94 @@ def check_indexes(conn):
            f"type={x4.get('type')}")
 
 
+def check_window_ctes(conn):
+    """Results of 12_window_functions_ctes.sql."""
+    def rows_of(prefix):
+        cols, rows = result(prefix)
+        return cols or [], rows or []
+
+    # W1: ROW_NUMBER unique, RANK with gaps after ties, DENSE_RANK without gaps
+    cols, rows = rows_of("W1 ")
+    units = [r[2] for r in rows]
+    rn, rk, dr = ([r[i] for r in rows] for i in (3, 4, 5))
+    record(rn == list(range(1, len(rows) + 1)) and len(rows) == 38,
+           "W1 ROW_NUMBER is 1..n with no repeats", f"{len(rows)} products")
+    ties = len(units) != len(set(units))
+    exp_rank = [1 + sum(u > x for u in units) for x in units]
+    distinct_sorted = sorted(set(units), reverse=True)
+    exp_dense = [distinct_sorted.index(x) + 1 for x in units]
+    record(ties and rk == exp_rank, "W1 RANK: ties share a rank, then a gap", f"max rank {max(rk or [0])}")
+    record(dr == exp_dense and max(dr) < max(rk), "W1 DENSE_RANK: ties share a rank, no gap",
+           f"max dense {max(dr or [0])}")
+
+    # W2b (RANK = 1) must match B3 from file 09; W3 (ROW_NUMBER = 1) has one row per category
+    _, b3 = result("B3 ")
+    _, w2b = rows_of("W2b ")
+    record(sorted((r[0], r[1]) for r in w2b) == sorted((r[0], r[1]) for r in (b3 or [])),
+           "W2b RANK=1 per category = B3 (no window function) result", f"{len(w2b)} rows")
+    _, w3 = rows_of("W3 ")
+    record(len(w3) == len({r[0] for r in w2b}) == len({r[0] for r in w3}),
+           "W3 ROW_NUMBER=1: exactly one product per category", f"{len(w3)} categories")
+    _, w2 = rows_of("W2 ")
+    record(sum(1 for r in w2 if r[4] == 1) >= len(w3), "W2 PARTITION BY restarts rank at 1 per category")
+
+    with conn.cursor() as cur:
+        net = float(scalar(cur, "SELECT SUM(p.amount) FROM payments p JOIN orders o USING (order_id) "
+                                "WHERE p.status = 'SUCCESS' AND o.status <> 'CANCELLED'"))
+    _, w4 = rows_of("W4 ")
+    running = [float(r[2]) for r in w4]
+    record(bool(running) and running == sorted(running) and abs(running[-1] - net) < 0.01
+           and float(w4[-1][3]) == 100.0, "W4 running total never falls and ends at net revenue",
+           f"{running[-1] if running else None}")
+    _, w5 = rows_of("W5 ")
+    ok = bool(w5) and w5[0][3] is None and all(
+        abs(float(w5[i][3]) - float(w5[i - 1][2])) < 0.01 for i in range(1, len(w5)))
+    record(ok, "W5 LAG: first month NULL, each row sees the previous month")
+    _, w6 = rows_of("W6 ")
+    rev = [float(r[1]) for r in w6]
+    exp = [round(sum(rev[max(0, i - 2):i + 1]) / len(rev[max(0, i - 2):i + 1]), 2) for i in range(len(rev))]
+    record(bool(w6) and all(abs(float(r[2]) - e) < 0.01 for r, e in zip(w6, exp)),
+           "W6 3-month moving average is correct")
+
+    _, w7 = rows_of("W7 ")
+    sizes = [sum(1 for r in w7 if r[3] == q) for q in (1, 2, 3, 4)]
+    with conn.cursor() as cur:
+        paying = scalar(cur, "SELECT COUNT(*) FROM vw_customer_lifetime_value WHERE lifetime_value > 0")
+    record(len(w7) == paying and max(sizes) - min(sizes) <= 1,
+           "W7 NTILE(4): every paying customer in 4 near-equal groups", f"{sizes} of {paying}")
+    _, w7b = rows_of("W7b ")
+    record(len(w7b) == 4 and abs(sum(float(r[5]) for r in w7b) - 100) < 0.2,
+           "W7b quartile shares add up to 100%")
+    _, w8 = rows_of("W8 ")
+    _, a1 = result("A1 ")
+    record(len(w8) == len(a1 or []), "W8 LEAD gaps for every repeat customer", f"{len(w8)}")
+    _, w9 = rows_of("W9 ")
+    record(len(w9) == 15 and float(w9[0][4]) == 1.0, "W9 top product has PERCENT_RANK 1")
+
+    _, t1 = rows_of("T1 ")
+    record(len({r[0] for r in t1}) == 7, "T1 a top product for each of the 7 months", f"{len(t1)} rows")
+    _, t2 = rows_of("T2 ")
+    record(sum(r[1] for r in t2) == 44, "T2 cohorts cover all 44 ordering customers")
+    _, t3 = rows_of("T3 ")
+    _, s14 = result("S14 ")
+    record([r[0] for r in t3] == [r[0] for r in (s14 or [])] and len(t3) > 0,
+           "T3 CTE gives the same months as S14 (derived tables)")
+
+    _, r1 = rows_of("R1 ")
+    levels = [r[2] for r in r1]
+    record(len(r1) == 23 and max(levels) == 3 and levels.count(3) == 9,
+           "R1 recursive tree: 23 categories, 3 levels, 9 leaf paths", f"{len(r1)} rows")
+    _, r2 = rows_of("R2 ")
+    with conn.cursor() as cur:
+        units_all = scalar(cur, "SELECT SUM(oi.quantity) FROM order_items oi JOIN orders o USING (order_id) "
+                                "WHERE o.status <> 'CANCELLED'")
+    record(len(r2) == 4 and sum(r[3] for r in r2) == units_all,
+           "R2 roll-up: 4 top-level categories, units add up", f"{units_all}")
+    _, r3 = rows_of("R3 ")
+    record(len(r3) == 15 and max(r[1] for r in r3) >= 1, "R3 referral chains reach all 15 referred customers",
+           f"max depth {max((r[1] for r in r3), default=0)}")
+
+
 def check_dcl(cfg, db):
     """Log in as each project user and check what is allowed and denied."""
     TABLE_DENIED, COLUMN_DENIED = 1142, 1143
@@ -1026,6 +1114,8 @@ def main():
         check_views(conn)
         print("Index checks:")
         check_indexes(conn)
+        print("Window function and CTE checks:")
+        check_window_ctes(conn)
         print("DCL checks:")
         check_dcl(cfg, db)
         print("Constraint checks:")
