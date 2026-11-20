@@ -858,6 +858,49 @@ def check_views(conn):
         record(bool(v5) and float(v5[0][1]) == 649.0, "UPDATE through the view reached products")
 
 
+def check_indexes(conn):
+    """Results of 11_indexes.sql: indexes exist and EXPLAIN changed as expected."""
+    want = {("payments", "idx_payments_status_method"), ("orders", "idx_orders_date"),
+            ("orders", "idx_orders_customer_date"), ("deliveries", "idx_deliveries_status"),
+            ("products", "idx_products_brand")}
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT table_name, index_name FROM information_schema.statistics "
+                    "WHERE table_schema = DATABASE() AND index_name LIKE 'idx\\_%'")
+        found = {(t, i) for t, i in cur.fetchall()}
+    record(found == want, "5 new indexes exist", f"{sorted(i for _, i in found)}")
+
+    def plan(prefix):
+        cols, rows = result(prefix)
+        if not rows:
+            return {}
+        return dict(zip(cols, rows[0]))
+
+    b, a = plan("X1 EXPLAIN BEFORE"), plan("X1 EXPLAIN AFTER")
+    record(b.get("type") == "ALL" and b.get("key") is None,
+           "X1 before: full table scan on payments", f"type={b.get('type')} rows={b.get('rows')}")
+    record(a.get("type") == "ref" and a.get("key") == "idx_payments_status_method"
+           and (a.get("rows") or 0) < (b.get("rows") or 0),
+           "X1 after: ref lookup via idx_payments_status_method, fewer rows",
+           f"type={a.get('type')} rows={a.get('rows')}")
+
+    b, a = plan("X2 EXPLAIN BEFORE"), plan("X2 EXPLAIN AFTER")
+    record(b.get("type") == "ALL", "X2 before: full table scan on orders",
+           f"type={b.get('type')} rows={b.get('rows')}")
+    record(a.get("type") == "range" and a.get("key") == "idx_orders_date"
+           and (a.get("rows") or 0) < (b.get("rows") or 0),
+           "X2 after: range scan via idx_orders_date, fewer rows",
+           f"type={a.get('type')} rows={a.get('rows')}")
+
+    b, a = plan("X3 EXPLAIN BEFORE"), plan("X3 EXPLAIN AFTER")
+    record("filesort" in (b.get("Extra") or ""), "X3 before: needs a filesort", b.get("Extra"))
+    record(a.get("key") == "idx_orders_customer_date" and "filesort" not in (a.get("Extra") or ""),
+           "X3 after: composite index, no filesort", f"key={a.get('key')} extra={a.get('Extra')}")
+
+    x4 = plan("X4 ")
+    record(x4.get("type") == "ALL", "X4 function on column: index not used",
+           f"type={x4.get('type')}")
+
+
 def check_dcl(cfg, db):
     """Log in as each project user and check what is allowed and denied."""
     TABLE_DENIED, COLUMN_DENIED = 1142, 1143
@@ -981,6 +1024,8 @@ def main():
         check_analytics(conn)
         print("View checks:")
         check_views(conn)
+        print("Index checks:")
+        check_indexes(conn)
         print("DCL checks:")
         check_dcl(cfg, db)
         print("Constraint checks:")
