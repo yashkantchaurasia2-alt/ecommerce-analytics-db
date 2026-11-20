@@ -174,6 +174,15 @@ def rebuild_test_db(cfg):
 
 
 INVENTORY_CHANGES = {}  # sql file name -> {(sku, warehouse_id): change in quantity}
+QUERY_RESULTS = {}      # "-- @query:" title -> (column names, rows)
+
+
+def result(prefix):
+    """Rows of the saved query whose title starts with prefix (e.g. 'J3 ')."""
+    for title, (cols, rows) in QUERY_RESULTS.items():
+        if title.startswith(prefix):
+            return cols, rows
+    return None, None
 
 
 def inventory_snapshot(conn):
@@ -215,6 +224,7 @@ def run_sql_files(conn):
                                 GENERATED_PASSWORDS[r[ui]] = r[pi]
                         elif title:
                             cols = [d[0] for d in cur.description]
+                            QUERY_RESULTS[title] = (cols, rows)
                             saved.append(to_markdown(title, stmt, cols, rows))
                 except pymysql.MySQLError as e:
                     snippet = " ".join(stmt.split())[:120]
@@ -530,6 +540,61 @@ def check_tcl(conn):
         record(r3 == "ROLLED BACK: payment FAILED", "procedure call 3 rolled back (payment)", r3)
 
 
+def check_joins():
+    """Results of 06_joins.sql (read from the saved query results)."""
+    def col(cols, rows, name):
+        i = cols.index(name)
+        return [r[i] for r in rows]
+
+    cols, rows = result("J1 ")
+    record(rows is not None and len(rows) == 40, "J1 INNER JOIN: 40 products with category",
+           f"{None if rows is None else len(rows)}")
+    cols, rows = result("J2 ")
+    record(rows is not None and len(rows) == 10, "J2 INNER JOIN: top 10 orders")
+
+    cols, rows = result("J3 ")
+    zeros = None if rows is None else col(cols, rows, "orders_placed").count(0)
+    record(rows is not None and len(rows) == 50 and zeros == 6,
+           "J3 LEFT JOIN: 50 customers, 6 with zero orders", f"zero={zeros}")
+
+    cols, rows = result("J4 ")
+    skus = None if rows is None else sorted(col(cols, rows, "sku"))
+    record(skus == ["AJT-CLK", "APL-MBA-M3"], "J4 anti-join: never-sold products", f"{skus}")
+
+    cols, rows = result("J5 ")
+    used = None if rows is None else dict(zip(col(cols, rows, "code"), col(cols, rows, "times_used")))
+    record(used is not None and len(used) == 6 and used.get("SUMMER25") == 0,
+           "J5 RIGHT JOIN: all 6 coupons, SUMMER25 unused", f"{used}")
+
+    cols, rows = result("J6 ")
+    left_only = rows is not None and any(r[2] is None for r in rows)
+    right_only = rows is not None and any(r[0] is None for r in rows)
+    record(left_only and right_only, "J6 FULL OUTER: unmatched rows on BOTH sides",
+           f"left-only={left_only} right-only={right_only}")
+
+    cols, rows = result("J7 ")
+    tops = None if rows is None else col(cols, rows, "parent_category").count(None)
+    record(rows is not None and len(rows) == 23 and tops == 4,
+           "J7 SELF JOIN: 23 categories, 4 top-level", f"top={tops}")
+    cols, rows = result("J8 ")
+    record(rows is not None and len(rows) == 9, "J8 SELF JOIN: 9 three-level paths",
+           f"{None if rows is None else len(rows)}")
+    cols, rows = result("J9 ")
+    record(rows is not None and len(rows) == 15, "J9 SELF JOIN: 15 referral pairs",
+           f"{None if rows is None else len(rows)}")
+
+    cols, rows = result("J10 ")
+    record(bool(rows) and len(cols) == 11, "J10 8-table JOIN returns recent orders",
+           f"{None if rows is None else len(rows)} rows")
+    cols, rows = result("J11 ")
+    cats = set() if rows is None else set(col(cols, rows, "category"))
+    record(None not in cats and len(cats) == 4, "J11 revenue by category and method",
+           f"categories={sorted(c for c in cats if c)}")
+    cols, rows = result("J12 ")
+    record(rows is not None and len(rows) == 20, "J12 CROSS JOIN: 120 - 100 = 20 unstocked pairs",
+           f"{None if rows is None else len(rows)}")
+
+
 def check_dcl(cfg, db):
     """Log in as each project user and check what is allowed and denied."""
     TABLE_DENIED, COLUMN_DENIED = 1142, 1143
@@ -631,6 +696,8 @@ def main():
         check_dml(conn)
         print("TCL checks:")
         check_tcl(conn)
+        print("Join checks:")
+        check_joins()
         print("DCL checks:")
         check_dcl(cfg, db)
         print("Constraint checks:")
