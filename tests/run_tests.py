@@ -101,6 +101,7 @@ def split_sql(text):
 # Saving query results to outputs/
 # ---------------------------------------------------------------------------
 OUTPUT_DIR = ROOT / "outputs"
+GENERATED_PASSWORDS = {}  # user -> password from CREATE USER ... RANDOM PASSWORD (memory only)
 MAX_OUTPUT_ROWS = 60
 
 
@@ -174,7 +175,14 @@ def run_sql_files(conn):
                     cur.execute(stmt)
                     if cur.description:
                         rows = cur.fetchall()
-                        if title:
+                        cols_lower = [d[0].lower() for d in cur.description]
+                        if "generated password" in cols_lower:
+                            # CREATE USER ... RANDOM PASSWORD: keep in memory only,
+                            # never print it or write it to outputs/.
+                            ui, pi = cols_lower.index("user"), cols_lower.index("generated password")
+                            for r in rows:
+                                GENERATED_PASSWORDS[r[ui]] = r[pi]
+                        elif title:
                             cols = [d[0] for d in cur.description]
                             saved.append(to_markdown(title, stmt, cols, rows))
                 except pymysql.MySQLError as e:
@@ -441,6 +449,85 @@ def check_dml(conn):
                "7 SELECT results saved to outputs/03_dml_operations.md")
 
 
+def check_dcl(cfg, db):
+    """Log in as each project user and check what is allowed and denied."""
+    TABLE_DENIED, COLUMN_DENIED = 1142, 1143
+    admin = connect(cfg, db)
+    with admin.cursor() as cur:
+        roles = scalar(cur, "SELECT COUNT(*) FROM mysql.user WHERE user IN "
+                            "('r_admin', 'r_order_clerk', 'r_analyst') AND account_locked = 'Y'")
+        record(roles == 3, "3 roles exist", f"{roles}")
+        edges = scalar(cur, "SELECT COUNT(*) FROM mysql.role_edges WHERE "
+                            "(from_user, to_user) IN (('r_admin', 'db_admin'), "
+                            "('r_order_clerk', 'order_clerk'), ('r_analyst', 'analyst'))")
+        record(edges == 3, "each user has its role", f"{edges}")
+        defaults = scalar(cur, "SELECT COUNT(*) FROM mysql.default_roles WHERE user IN "
+                               "('db_admin', 'order_clerk', 'analyst')")
+        record(defaults == 3, "each user has a default role", f"{defaults}")
+    admin.close()
+
+    missing = {"db_admin", "order_clerk", "analyst"} - set(GENERATED_PASSWORDS)
+    if missing:
+        record(False, "random passwords captured for all users", f"missing {sorted(missing)}")
+        return
+    record(True, "random passwords captured (kept in memory only)")
+
+    def as_user(user):
+        return pymysql.connect(host=cfg["DB_HOST"] or "127.0.0.1", port=int(cfg["DB_PORT"] or 3306),
+                               user=user, password=GENERATED_PASSWORDS[user], database=db,
+                               charset="utf8mb4", autocommit=False, connect_timeout=10)
+
+    def attempt(conn, label, sql, expect_ok, deny_codes=(TABLE_DENIED, COLUMN_DENIED)):
+        with conn.cursor() as cur:
+            try:
+                cur.execute(sql)
+                if cur.description:
+                    cur.fetchall()
+                record(expect_ok, label, "allowed" if expect_ok else "was ALLOWED")
+            except pymysql.MySQLError as e:
+                ok = (not expect_ok) and e.args[0] in deny_codes
+                record(ok, label, f"MySQL error {e.args[0]}")
+            finally:
+                conn.rollback()
+
+    try:
+        conns = {u: as_user(u) for u in ("db_admin", "order_clerk", "analyst")}
+    except pymysql.MySQLError as e:
+        record(False, "log in as project users", f"{e.args}")
+        return
+    record(True, "log in as db_admin, order_clerk, analyst")
+
+    a, c, n = conns["analyst"], conns["order_clerk"], conns["db_admin"]
+    attempt(n, "db_admin: can DELETE (inside rolled-back txn)", "DELETE FROM payments WHERE 1 = 0", True)
+    attempt(n, "db_admin: can ALTER schema", "ALTER TABLE warehouses COMMENT = 'admin test'", True)
+
+    attempt(c, "clerk: can SELECT products", "SELECT COUNT(*) FROM products", True)
+    attempt(c, "clerk: can INSERT an order",
+            "INSERT INTO orders (customer_id) VALUES (1)", True)
+    attempt(c, "clerk: can UPDATE inventory.quantity",
+            "UPDATE inventory SET quantity = quantity WHERE product_id = 1", True)
+    attempt(c, "clerk: denied UPDATE inventory.reorder_level",
+            "UPDATE inventory SET reorder_level = 5 WHERE product_id = 1", False)
+    attempt(c, "clerk: denied UPDATE products.price",
+            "UPDATE products SET price = 1 WHERE product_id = 1", False)
+    attempt(c, "clerk: denied DELETE orders (after REVOKE)",
+            "DELETE FROM orders WHERE order_id = 1001", False)
+
+    attempt(a, "analyst: can SELECT orders", "SELECT COUNT(*) FROM orders", True)
+    attempt(a, "analyst: denied INSERT",
+            "INSERT INTO customers (full_name, email, phone) VALUES ('X', 'x@example.in', '9000000002')", False)
+    attempt(a, "analyst: denied UPDATE", "UPDATE products SET price = 1 WHERE product_id = 1", False)
+    attempt(a, "analyst: denied DELETE", "DELETE FROM payments WHERE 1 = 0", False)
+    for conn in conns.values():
+        conn.close()
+
+    # ALTER TABLE ... COMMENT is DDL (auto-commit); put the comment back.
+    admin = connect(cfg, db)
+    with admin.cursor() as cur:
+        cur.execute("ALTER TABLE warehouses COMMENT = ''")
+    admin.close()
+
+
 def main():
     cfg = load_config()
     db = cfg["DB_TEST_NAME"]
@@ -461,6 +548,8 @@ def main():
         check_seed(conn)
         print("DML checks:")
         check_dml(conn)
+        print("DCL checks:")
+        check_dcl(cfg, db)
         print("Constraint checks:")
         check_constraints(conn)
     conn.close()
