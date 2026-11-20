@@ -43,9 +43,18 @@ def split_sql(text):
     i, n = 0, len(text)
     quote = None
     title = None
+    delim = ";"
+    delimiter_re = re.compile(r"[ \t]*DELIMITER[ \t]+(\S+)[ \t]*(?:\r?\n|$)", re.IGNORECASE)
     while i < n:
         ch = text[i]
         nxt = text[i + 1] if i + 1 < n else ""
+        # "DELIMITER $$" at the start of a line (client command, used for procedures)
+        if not quote and (i == 0 or text[i - 1] == "\n"):
+            m = delimiter_re.match(text, i)
+            if m:
+                delim = m.group(1)
+                i = m.end()
+                continue
         if quote:
             buf.append(ch)
             if ch == "\\" and quote in ("'", '"'):
@@ -82,12 +91,14 @@ def split_sql(text):
             i = n if end == -1 else end + 2
             buf.append(" ")
             continue
-        elif ch == ";":
+        elif text.startswith(delim, i):
             stmt = "".join(buf).strip()
             if stmt:
                 statements.append((title, stmt))
                 title = None
             buf = []
+            i += len(delim)
+            continue
         else:
             buf.append(ch)
         i += 1
@@ -162,6 +173,25 @@ def rebuild_test_db(cfg):
     conn.close()
 
 
+INVENTORY_CHANGES = {}  # sql file name -> {(sku, warehouse_id): change in quantity}
+
+
+def inventory_snapshot(conn):
+    with conn.cursor() as cur:
+        try:
+            cur.execute("SELECT p.sku, i.warehouse_id, i.quantity FROM inventory i "
+                        "JOIN products p ON p.product_id = i.product_id")
+            return {(s, w): q for s, w, q in cur.fetchall()}
+        except pymysql.MySQLError:
+            return {}   # tables do not exist yet (before 01_ddl_schema.sql)
+
+
+def diff_snapshots(before, after):
+    keys = set(before) | set(after)
+    return {k: after.get(k, 0) - before.get(k, 0) for k in keys
+            if after.get(k, 0) != before.get(k, 0)}
+
+
 def run_sql_files(conn):
     files = sorted(SQL_DIR.glob("[0-9][0-9]_*.sql"))
     all_ok = True
@@ -169,6 +199,7 @@ def run_sql_files(conn):
     for path in files:
         statements = split_sql(path.read_text(encoding="utf-8"))
         saved = []
+        before = inventory_snapshot(conn)
         with conn.cursor() as cur:
             for idx, (title, stmt) in enumerate(statements, 1):
                 try:
@@ -192,6 +223,7 @@ def run_sql_files(conn):
                     break
             else:
                 record(True, f"run {path.name}", f"{len(statements)} statements, {len(saved)} results saved")
+                INVENTORY_CHANGES[path.name] = diff_snapshots(before, inventory_snapshot(conn))
         if saved and all_ok:
             header = (f"# Results of `sql/{path.name}`\n\n"
                       "Saved automatically by `tests/run_tests.py` from a fresh test database.\n\n")
@@ -449,6 +481,55 @@ def check_dml(conn):
                "7 SELECT results saved to outputs/03_dml_operations.md")
 
 
+def check_tcl(conn):
+    """Effects of 05_tcl_transactions.sql."""
+    with conn.cursor() as cur:
+        change = INVENTORY_CHANGES.get("05_tcl_transactions.sql")
+        want = {("ONP-NB2", 3): -1, ("SPG-CASE", 3): -2,   # case 1 committed
+                ("JBL-760NC", 3): -1,                      # case 4 kept item 1
+                ("PGN-KTL", 1): -2}                        # procedure call 1
+        record(change == want, "stock changed ONLY for committed orders",
+               f"changes={change}")
+        for sku in ("BK-ATOMIC", "RDM-N13P", "SNY-XM5"):
+            record(change is not None and not any(k[0] == sku for k in change),
+                   f"rolled-back {sku} stock is unchanged")
+
+        def orders_at(ts):
+            return scalar(cur, "SELECT COUNT(*) FROM orders WHERE order_date = %s", (ts,))
+
+        record(orders_at("2026-11-20 10:00:00") == 1, "case 1: order committed")
+        items = scalar(cur, "SELECT COUNT(*) FROM order_items oi JOIN orders o USING (order_id) "
+                            "WHERE o.order_date = '2026-11-20 10:00:00'")
+        record(items == 2, "case 1: order has 2 items", f"{items}")
+        paid = scalar(cur, "SELECT p.amount FROM payments p JOIN orders o USING (order_id) "
+                           "WHERE o.order_date = '2026-11-20 10:00:00' AND p.status = 'SUCCESS'")
+        record(paid is not None and float(paid) == 4097.0, "case 1: payment = 2299 + 2 x 899", f"{paid}")
+        record(orders_at("2026-11-20 10:15:00") == 0, "case 2: payment-failed order rolled back")
+        record(orders_at("2026-11-20 10:30:00") == 0, "case 3: no-stock order rolled back")
+
+        cur.execute("SELECT p.sku FROM order_items oi JOIN orders o USING (order_id) "
+                    "JOIN products p ON p.product_id = oi.product_id "
+                    "WHERE o.order_date = '2026-11-20 10:45:00'")
+        skus = [r[0] for r in cur.fetchall()]
+        record(skus == ["JBL-760NC"], "case 4: ROLLBACK TO SAVEPOINT kept only item 1", f"{skus}")
+
+        price = scalar(cur, "SELECT price FROM products WHERE sku = 'PGN-KTL'")
+        record(float(price) == 699.0, "case 5: autocommit=0 change was rolled back", f"{price}")
+        city = scalar(cur, "SELECT city FROM warehouses WHERE warehouse_id = 3")
+        record(city == "Bengaluru", "case 5: warehouse city restored", city)
+        record(scalar(cur, "SELECT @@autocommit") == 1, "session ends with autocommit = 1")
+
+        proc = scalar(cur, "SELECT COUNT(*) FROM information_schema.routines "
+                           "WHERE routine_schema = DATABASE() AND routine_name = 'sp_place_order'")
+        record(proc == 1, "procedure sp_place_order exists")
+        record(orders_at("2026-11-20 12:00:00") == 1, "procedure: only the good call committed")
+        cur.execute("SELECT @call1, @call2, @call3")
+        r1, r2, r3 = cur.fetchone()
+        record((r1 or "").startswith("COMMITTED order"), "procedure call 1 committed", r1)
+        record(r2 == "ROLLED BACK: insufficient stock", "procedure call 2 rolled back (stock)", r2)
+        record(r3 == "ROLLED BACK: payment FAILED", "procedure call 3 rolled back (payment)", r3)
+
+
 def check_dcl(cfg, db):
     """Log in as each project user and check what is allowed and denied."""
     TABLE_DENIED, COLUMN_DENIED = 1142, 1143
@@ -548,6 +629,8 @@ def main():
         check_seed(conn)
         print("DML checks:")
         check_dml(conn)
+        print("TCL checks:")
+        check_tcl(conn)
         print("DCL checks:")
         check_dcl(cfg, db)
         print("Constraint checks:")
