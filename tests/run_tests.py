@@ -676,6 +676,50 @@ def check_subqueries(conn):
     record(0 < len(rows) < 7, "S14 some (not all) months above average", f"{[r[0] for r in rows]}")
 
 
+def check_set_operations(conn):
+    """Results of 08_set_operations.sql, cross-checked against each other."""
+    def ids(prefix, col=0):
+        _, rows = result(prefix)
+        return None if rows is None else sorted(r[col] for r in rows)
+
+    e1, e1b, e1c = ids("E1 "), ids("E1b "), ids("E1c ")
+    record(bool(e1) and e1 == e1b == e1c, "E1 EXCEPT = NOT EXISTS = LEFT JOIN IS NULL",
+           f"{None if e1 is None else len(e1)} customers")
+    i1, i1b = ids("I1 "), ids("I1b ")
+    record(bool(i1) and i1 == i1b, "I1 INTERSECT = IN version", f"{None if i1 is None else len(i1)} customers")
+
+    u1 = ids("U1 ")
+    _, u2 = result("U2 ")
+    record(u1 is not None and u2 is not None and len(u2) - len(u1) == len(i1 or []) > 0,
+           "UNION ALL - UNION = customers counted twice (= INTERSECT)",
+           f"union={len(u1 or [])} union_all={len(u2 or [])} both={len(i1 or [])}")
+    _, u3 = result("U3 ")
+    counts = {r[0]: r[1] for r in (u3 or [])}
+    record(counts.get("UNION (duplicates removed)") == len(u1 or []) and
+           counts.get("UNION ALL (duplicates kept)") == len(u2 or []),
+           "U3 counts match U1 and U2", f"{counts}")
+
+    cities = ids("U4 ")
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT city FROM customer_addresses WHERE is_default = TRUE "
+                    "UNION SELECT city FROM warehouses")
+        want = sorted(r[0] for r in cur.fetchall())
+    record(cities == want and "Gurugram" in (cities or []), "U4 UNION of customer and warehouse cities",
+           f"{len(cities or [])} cities")
+
+    i2 = ids("I2 ")
+    with conn.cursor() as cur:
+        cur.execute("SELECT oi.product_id FROM order_items oi JOIN orders o USING (order_id) "
+                    "GROUP BY oi.product_id "
+                    "HAVING SUM(o.order_date >= '2026-10-01' AND o.order_date < '2026-11-01') > 0 "
+                    "   AND SUM(o.order_date >= '2026-11-01') > 0")
+        want = sorted(r[0] for r in cur.fetchall())
+    record(bool(i2) and i2 == want, "I2 INTERSECT = GROUP BY HAVING version", f"{len(i2 or [])} products")
+
+    e2 = ids("E2 ", 1)
+    record(e2 == ["AJT-CLK", "APL-MBA-M3"], "E2 EXCEPT: never-sold products", f"{e2}")
+
+
 def check_dcl(cfg, db):
     """Log in as each project user and check what is allowed and denied."""
     TABLE_DENIED, COLUMN_DENIED = 1142, 1143
@@ -781,6 +825,8 @@ def main():
         check_joins()
         print("Subquery checks:")
         check_subqueries(conn)
+        print("Set operation checks:")
+        check_set_operations(conn)
         print("DCL checks:")
         check_dcl(cfg, db)
         print("Constraint checks:")
