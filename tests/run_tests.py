@@ -989,6 +989,33 @@ def check_window_ctes(conn):
            f"max depth {max((r[1] for r in r3), default=0)}")
 
 
+def check_demo(conn):
+    """demo/demo_script.sql must run without errors and leave the data unchanged."""
+    tables = ["customers", "products", "orders", "order_items", "payments", "inventory", "deliveries"]
+
+    def fingerprint():
+        with conn.cursor() as cur:
+            counts = {t: scalar(cur, f"SELECT COUNT(*) FROM {t}") for t in tables}
+            counts["stock_total"] = scalar(cur, "SELECT SUM(quantity) FROM inventory")
+            return counts
+
+    before = fingerprint()
+    statements = split_sql((ROOT / "demo" / "demo_script.sql").read_text(encoding="utf-8"))
+    error = None
+    with conn.cursor() as cur:
+        for idx, (_, stmt) in enumerate(statements, 1):
+            try:
+                cur.execute(stmt)
+                if cur.description:
+                    cur.fetchall()
+            except pymysql.MySQLError as e:
+                error = f"statement {idx}: {e.args}"
+                break
+    record(error is None, "demo script runs end to end without errors",
+           error or f"{len(statements)} statements")
+    record(fingerprint() == before, "demo script leaves the data unchanged (ROLLBACK worked)")
+
+
 def check_dcl(cfg, db):
     """Log in as each project user and check what is allowed and denied."""
     TABLE_DENIED, COLUMN_DENIED = 1142, 1143
@@ -1120,6 +1147,8 @@ def main():
         check_dcl(cfg, db)
         print("Constraint checks:")
         check_constraints(conn)
+        print("Demo script checks:")
+        check_demo(conn)
     conn.close()
 
     passed = sum(1 for s, _, _ in RESULTS if s == "PASS")

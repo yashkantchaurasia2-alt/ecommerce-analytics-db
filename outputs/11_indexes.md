@@ -2,7 +2,7 @@
 
 Saved automatically by `tests/run_tests.py` from a fresh test database.
 
-## I0 indexes on orders BEFORE this file (PK and FK indexes only)
+## K0 indexes on orders BEFORE this file (PK and FK indexes only)
 
 ```sql
 SELECT index_name, seq_in_index, column_name, non_unique
@@ -122,7 +122,7 @@ WHERE  YEAR(order_date) = 2026 AND MONTH(order_date) = 11
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | SIMPLE | orders | NULL | ALL | NULL | NULL | NULL | NULL | 279 | 100.0 | Using where |
 
-## I1 all indexes created in this file
+## K1 all indexes created in this file
 
 ```sql
 SELECT table_name,
@@ -145,7 +145,7 @@ ORDER  BY table_name, index_name
 | payments | idx_payments_status_method | status,method |
 | products | idx_products_brand | brand |
 
-## I2 number of indexes per table (more indexes = slower writes)
+## K2 number of indexes per table (more indexes = slower writes)
 
 ```sql
 SELECT table_name,

@@ -23,17 +23,17 @@
 --
 -- Foreign-key columns already have an index: InnoDB creates one
 -- automatically for every FOREIGN KEY (e.g. order_items.product_id), so
--- we do not create duplicates of those (see I0 below).
+-- we do not create duplicates of those (see K0 below).
 --
 -- Lines starting with "-- @query:" name the result saved to
 -- outputs/11_indexes.md.
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
--- I0. Indexes that already exist on orders (PRIMARY + FK indexes)
+-- K0. Indexes that already exist on orders (PRIMARY + FK indexes)
 -- ---------------------------------------------------------------------
 -- Indexing (existing indexes) | Business question: which indexes did MySQL already create for the PK and FKs?
--- @query: I0 indexes on orders BEFORE this file (PK and FK indexes only)
+-- @query: K0 indexes on orders BEFORE this file (PK and FK indexes only)
 SELECT index_name, seq_in_index, column_name, non_unique
 FROM   information_schema.statistics
 WHERE  table_schema = DATABASE() AND table_name = 'orders'
@@ -136,7 +136,7 @@ CREATE INDEX idx_deliveries_status ON deliveries (status);
 CREATE INDEX idx_products_brand ON products (brand);
 
 -- Indexing (catalog) | Business question: which indexes did this file add, on which columns?
--- @query: I1 all indexes created in this file
+-- @query: K1 all indexes created in this file
 SELECT table_name,
        index_name,
        GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns_in_order
@@ -147,7 +147,7 @@ GROUP  BY table_name, index_name
 ORDER  BY table_name, index_name;
 
 -- Indexing (trade-off) | Business question: which tables pay the highest write cost for their indexes?
--- @query: I2 number of indexes per table (more indexes = slower writes)
+-- @query: K2 number of indexes per table (more indexes = slower writes)
 SELECT table_name,
        COUNT(DISTINCT index_name) AS indexes
 FROM   information_schema.statistics
