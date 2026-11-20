@@ -720,6 +720,98 @@ def check_set_operations(conn):
     record(e2 == ["AJT-CLK", "APL-MBA-M3"], "E2 EXCEPT: never-sold products", f"{e2}")
 
 
+def check_analytics(conn):
+    """Results of 09_customer_product_analytics.sql, reconciled with each other."""
+    NET = ("SELECT {cols} FROM payments p JOIN orders o USING (order_id) "
+           "WHERE p.status = 'SUCCESS' AND o.status <> 'CANCELLED'")
+    with conn.cursor() as cur:
+        total = float(scalar(cur, NET.format(cols="SUM(p.amount)")))
+        paid_orders = scalar(cur, NET.format(cols="COUNT(*)"))
+        repeat_n = scalar(cur, "SELECT COUNT(*) FROM (SELECT customer_id FROM orders "
+                               "GROUP BY customer_id HAVING COUNT(*) > 1) t")
+        cur.execute("SELECT oi.product_id FROM order_items oi JOIN orders o USING (order_id) "
+                    "WHERE o.status <> 'CANCELLED' GROUP BY oi.product_id "
+                    "ORDER BY SUM(oi.quantity) DESC, SUM(oi.quantity * oi.unit_price) DESC LIMIT 1")
+        top_qty = cur.fetchone()[0]
+        cur.execute("SELECT oi.product_id FROM order_items oi JOIN orders o USING (order_id) "
+                    "WHERE o.status <> 'CANCELLED' GROUP BY oi.product_id "
+                    "ORDER BY SUM(oi.quantity * oi.unit_price) DESC LIMIT 1")
+        top_rev = cur.fetchone()[0]
+        cur.execute("SELECT p.category_id, MAX(u) FROM (SELECT oi.product_id, SUM(oi.quantity) u "
+                    "FROM order_items oi JOIN orders o USING (order_id) WHERE o.status <> 'CANCELLED' "
+                    "GROUP BY oi.product_id) s JOIN products p USING (product_id) GROUP BY p.category_id")
+        cat_max = {cid: m for cid, m in cur.fetchall()}
+        cur.execute("SELECT category_id, category_name FROM categories")
+        cat_name = {cid: n for cid, n in cur.fetchall()}
+        saved_total = float(scalar(cur, "SELECT SUM(amount_saved) FROM order_discounts"))
+
+    cols, rows = result("A1 ")
+    rows = rows or []
+    record(len(rows) == repeat_n and all(r[2] > 1 for r in rows) and repeat_n >= 20,
+           "A1 repeat customers = HAVING COUNT > 1 version", f"{len(rows)} customers")
+    _, a2 = result("A2 ")
+    record(bool(a2) and a2[0][1] == repeat_n, "A2 repeat rate uses the same repeat count",
+           f"{a2[0][3] if a2 else None}%")
+    _, a3 = result("A3 ")
+    spends = [float(r[4]) for r in (a3 or [])]
+    record(len(spends) == 10 and spends == sorted(spends, reverse=True), "A3 top 10 spenders, sorted")
+    _, a4 = result("A4 ")
+    record(sorted(r[0] for r in (a4 or [])) == ["Direct", "Referred"] and
+           sum(r[1] for r in a4) == 50, "A4 referred + direct = 50 customers")
+
+    _, b1 = result("B1 ")
+    record(bool(b1) and b1[0][0] == top_qty, "B1 rank-1 by quantity matches independent query",
+           f"{b1[0][1] if b1 else None}")
+    _, b2 = result("B2 ")
+    record(bool(b2) and b2[0][0] == top_rev, "B2 rank-1 by revenue matches independent query",
+           f"{b2[0][1] if b2 else None}")
+    record(bool(b1) and bool(b2) and b1[0][0] != b2[0][0],
+           "B1 and B2 have different winners (units vs money)")
+    _, b3 = result("B3 ")
+    by_name = {}
+    for cat, _, units in (b3 or []):
+        by_name.setdefault(cat, set()).add(units)
+    want = {cat_name[c]: {m} for c, m in cat_max.items()}
+    record(by_name == want, "B3 best seller per category = category maximum",
+           f"{len(by_name)} categories")
+    _, b4 = result("B4 ")
+    record(bool(b4) and len(b4) == 10, "B4 stock shown for the top 10 sellers")
+
+    _, c1 = result("C1 ")
+    ok = bool(c1) and c1[0][0] == paid_orders and abs(float(c1[0][1]) - total) < 0.01 \
+        and abs(float(c1[0][2]) - total / paid_orders) < 0.01
+    record(ok, "C1 AOV = net revenue / paid orders", f"AOV {c1[0][2] if c1 else None}")
+    _, c2 = result("C2 ")
+    c2_total = sum(float(r[2]) for r in (c2 or []))
+    c2_share = sum(float(r[4]) for r in (c2 or []))
+    record(len(c2 or []) == 4 and abs(c2_total - total) < 0.01 and abs(c2_share - 100) < 0.05,
+           "C2 revenue by method adds up to net revenue (and 100%)", f"{c2_total:.2f}")
+    _, c3 = result("C3 ")
+    record(bool(c3) and sum(r[1] for r in c3) == sum(r[2] + r[3] + r[4] for r in c3),
+           "C3 attempts = succeeded + failed + pending")
+    _, c4 = result("C4 ")
+    c4_total = sum(float(r[2]) for r in (c4 or []))
+    record(len(c4 or []) >= 6 and abs(c4_total - total) < 0.01,
+           "C4 monthly revenue adds up to net revenue", f"{len(c4 or [])} months")
+    cols, c5 = result("C5 ")
+    outcomes = {r[4] for r in (c5 or [])}
+    record(outcomes == {"Recovered on retry", "Money pending", "Failed - order cancelled"},
+           "C5 shows all 3 payment-trouble outcomes", f"{len(c5 or [])} orders")
+    _, c6 = result("C6 ")
+    record(bool(c6) and all(r[4] not in ("DELIVERED", "CANCELLED") for r in c6),
+           "C6 only undelivered live orders", f"{len(c6 or [])} orders")
+    _, c7 = result("C7 ")
+    record(bool(c7) and len(c7) == 5, "C7 all 5 couriers")
+
+    _, d1 = result("D1 ")
+    d1_total = sum(float(r[5]) for r in (d1 or []))
+    record(len(d1 or []) == 6 and abs(d1_total - saved_total) < 0.01,
+           "D1 coupon savings add up to order_discounts total", f"{d1_total:.2f}")
+    _, d2 = result("D2 ")
+    record(bool(d2) and sum(r[1] for r in d2) == paid_orders,
+           "D2 coupon + no-coupon orders = all paid orders")
+
+
 def check_dcl(cfg, db):
     """Log in as each project user and check what is allowed and denied."""
     TABLE_DENIED, COLUMN_DENIED = 1142, 1143
@@ -827,6 +919,8 @@ def main():
         check_subqueries(conn)
         print("Set operation checks:")
         check_set_operations(conn)
+        print("Analytics checks:")
+        check_analytics(conn)
         print("DCL checks:")
         check_dcl(cfg, db)
         print("Constraint checks:")
