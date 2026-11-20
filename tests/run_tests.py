@@ -595,6 +595,87 @@ def check_joins():
            f"{None if rows is None else len(rows)}")
 
 
+def check_subqueries(conn):
+    """Each subquery result is compared with an independent JOIN / GROUP BY version."""
+    def rows_of(prefix):
+        cols, rows = result(prefix)
+        return cols, (rows or [])
+
+    def same(label, prefix, key_col, alt_sql):
+        cols, rows = rows_of(prefix)
+        got = sorted(r[cols.index(key_col)] for r in rows) if cols else None
+        with conn.cursor() as cur:
+            cur.execute(alt_sql)
+            want = sorted(r[0] for r in cur.fetchall())
+        record(got == want and len(want) > 0, label, f"{len(want)} rows")
+
+    same("S1 IN = JOIN version (Apple buyers)", "S1 ", "customer_id",
+         "SELECT DISTINCT o.customer_id FROM orders o JOIN order_items oi USING (order_id) "
+         "JOIN products p USING (product_id) WHERE p.brand = 'Apple'")
+    same("S2 NOT IN = LEFT JOIN version", "S2 ", "product_id",
+         "SELECT p.product_id FROM products p LEFT JOIN (SELECT DISTINCT oi.product_id "
+         "FROM order_items oi JOIN orders o USING (order_id) WHERE o.order_date >= '2026-11-01') s "
+         "USING (product_id) WHERE s.product_id IS NULL AND p.is_active = TRUE")
+    same("S3 scalar = JOIN with average", "S3 ", "product_id",
+         "SELECT p.product_id FROM products p CROSS JOIN (SELECT AVG(price) a FROM products) t "
+         "WHERE p.price > t.a")
+    cols, rows = rows_of("S4 ")
+    record(len(rows) == 40, "S4 scalar in SELECT: 40 products")
+    same("S5 nested = JOIN version (best category buyers)", "S5 ", "customer_id",
+         "SELECT DISTINCT o.customer_id FROM orders o JOIN order_items oi USING (order_id) "
+         "JOIN products p USING (product_id) WHERE p.category_id = (SELECT category_id FROM "
+         "(SELECT p2.category_id, SUM(oi2.quantity) u FROM order_items oi2 JOIN products p2 "
+         "USING (product_id) GROUP BY p2.category_id ORDER BY u DESC LIMIT 1) b)")
+
+    with conn.cursor() as cur:
+        max_book = float(scalar(cur, "SELECT MAX(price) FROM products WHERE category_id IN (22, 23)"))
+    cols, rows = rows_of("S6a ")
+    record(bool(rows) and all(float(r[1]) > max_book for r in rows),
+           "S6a > ALL: every price above the costliest book", f"max book {max_book}")
+    cols, rows = rows_of("S6b ")
+    record(bool(rows) and all(float(r[1]) < max_book for r in rows),
+           "S6b < ANY: every price below the costliest book", f"{len(rows)} rows")
+
+    cols, rows = rows_of("S7 ")
+    record(bool(rows) and all(float(r[2]) > float(r[3]) for r in rows),
+           "S7 correlated: each price > its category average")
+    same("S7 correlated = derived-table JOIN version", "S7 ", "product_name",
+         "SELECT p.product_name FROM products p JOIN (SELECT category_id, AVG(price) a FROM "
+         "products GROUP BY category_id) c USING (category_id) WHERE p.price > c.a")
+    same("S8 latest order = GROUP BY MAX version (44 customers)", "S8 ", "order_id",
+         "SELECT o.order_id FROM orders o JOIN (SELECT customer_id, MAX(order_date) m FROM orders "
+         "GROUP BY customer_id) t ON t.customer_id = o.customer_id AND t.m = o.order_date")
+    cols, rows = rows_of("S8 ")
+    record(len(rows) == 44 and len({r[0] for r in rows}) == 44,
+           "S8 one latest order per ordering customer", f"{len(rows)} rows")
+
+    cols, rows = rows_of("S9 ")
+    spends = [float(r[3]) for r in rows]
+    record(len(rows) == 15 and spends == sorted(spends, reverse=True) and spends[0] > 0,
+           "S9 top 15 customers by spend, sorted")
+    same("S10 correlated = derived-table JOIN version", "S10 ", "order_id",
+         "SELECT v.order_id FROM (SELECT o.order_id, o.customer_id, SUM(oi.quantity * oi.unit_price) val "
+         "FROM orders o JOIN order_items oi USING (order_id) GROUP BY o.order_id, o.customer_id) v "
+         "JOIN (SELECT o.customer_id, SUM(oi.quantity * oi.unit_price) / COUNT(DISTINCT o.order_id) a "
+         "FROM orders o JOIN order_items oi USING (order_id) GROUP BY o.customer_id) c "
+         "USING (customer_id) WHERE v.val > c.a")
+    same("S11 EXISTS = JOIN + DISTINCT version", "S11 ", "customer_id",
+         "SELECT DISTINCT o.customer_id FROM orders o JOIN payments p USING (order_id) "
+         "WHERE p.status = 'FAILED'")
+    cols, rows = rows_of("S12 ")
+    _, j3 = result("J3 ")
+    zero_j3 = sorted(r[0] for r in (j3 or []) if r[3] == 0)
+    record(sorted(r[0] for r in rows) == zero_j3 and len(rows) == 6,
+           "S12 NOT EXISTS = the 6 zero-order customers of J3")
+
+    cols, rows = rows_of("S13 ")
+    segs = sorted(r[0] for r in rows)
+    record(segs == ["High", "Low", "Medium"] and sum(r[1] for r in rows) == 44,
+           "S13 derived tables: 3 segments covering 44 customers", f"{segs}")
+    cols, rows = rows_of("S14 ")
+    record(0 < len(rows) < 7, "S14 some (not all) months above average", f"{[r[0] for r in rows]}")
+
+
 def check_dcl(cfg, db):
     """Log in as each project user and check what is allowed and denied."""
     TABLE_DENIED, COLUMN_DENIED = 1142, 1143
@@ -698,6 +779,8 @@ def main():
         check_tcl(conn)
         print("Join checks:")
         check_joins()
+        print("Subquery checks:")
+        check_subqueries(conn)
         print("DCL checks:")
         check_dcl(cfg, db)
         print("Constraint checks:")
