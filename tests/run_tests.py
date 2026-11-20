@@ -812,6 +812,52 @@ def check_analytics(conn):
            "D2 coupon + no-coupon orders = all paid orders")
 
 
+def check_views(conn):
+    """Results of 10_views.sql."""
+    views = ["vw_active_products", "vw_customer_lifetime_value", "vw_order_summary",
+             "vw_pending_deliveries", "vw_product_sales"]
+    with conn.cursor() as cur:
+        cur.execute("SELECT table_name, is_updatable, check_option FROM information_schema.views "
+                    "WHERE table_schema = DATABASE() ORDER BY table_name")
+        found = cur.fetchall()
+        record([r[0] for r in found] == views, "5 views exist", f"{[r[0] for r in found]}")
+        info = {r[0]: (r[1], r[2]) for r in found}
+        record(info.get("vw_active_products") == ("YES", "CASCADED"),
+               "vw_active_products is updatable WITH CASCADED CHECK OPTION", f"{info.get('vw_active_products')}")
+        for v in views:
+            n = scalar(cur, f"SELECT COUNT(*) FROM {v}")
+            record(n > 0, f"{v} returns rows", f"{n}")
+
+        orders = scalar(cur, "SELECT COUNT(*) FROM orders")
+        summary = scalar(cur, "SELECT COUNT(*) FROM vw_order_summary")
+        record(orders == summary, "vw_order_summary: one row per order", f"{summary}/{orders}")
+        mismatch = scalar(cur, "SELECT COUNT(*) FROM vw_order_summary "
+                               "WHERE payment_status = 'PAID' AND net_paid <> payable")
+        record(mismatch == 0, "vw_order_summary: paid orders paid exactly the payable amount")
+
+        net = float(scalar(cur, "SELECT SUM(p.amount) FROM payments p JOIN orders o USING (order_id) "
+                                "WHERE p.status = 'SUCCESS' AND o.status <> 'CANCELLED'"))
+        ltv = float(scalar(cur, "SELECT SUM(lifetime_value) FROM vw_customer_lifetime_value"))
+        record(abs(net - ltv) < 0.01, "lifetime values add up to net revenue", f"{ltv:.2f}")
+        record(scalar(cur, "SELECT COUNT(*) FROM vw_customer_lifetime_value") == 50,
+               "vw_customer_lifetime_value covers all 50 customers")
+        segs = scalar(cur, "SELECT COUNT(DISTINCT segment) FROM vw_customer_lifetime_value")
+        record(segs == 4, "4 customer segments (High/Medium/Low/No purchase)", f"{segs}")
+
+        sold = scalar(cur, "SELECT SUM(units_sold) FROM vw_product_sales")
+        want = scalar(cur, "SELECT SUM(oi.quantity) FROM order_items oi JOIN orders o USING (order_id) "
+                           "WHERE o.status <> 'CANCELLED'")
+        record(sold == want, "vw_product_sales units = order_items units", f"{sold}")
+        pend = scalar(cur, "SELECT COUNT(*) FROM vw_pending_deliveries")
+        _, c6 = result("C6 ")
+        record(pend == len(c6 or []), "vw_pending_deliveries = C6 undelivered orders", f"{pend}")
+
+        price = scalar(cur, "SELECT price FROM products WHERE sku = 'PGN-KTL'")
+        record(float(price) == 699.0, "price updated through view was restored", f"{price}")
+        _, v5 = result("V5 ")
+        record(bool(v5) and float(v5[0][1]) == 649.0, "UPDATE through the view reached products")
+
+
 def check_dcl(cfg, db):
     """Log in as each project user and check what is allowed and denied."""
     TABLE_DENIED, COLUMN_DENIED = 1142, 1143
@@ -876,7 +922,19 @@ def check_dcl(cfg, db):
     attempt(c, "clerk: denied DELETE orders (after REVOKE)",
             "DELETE FROM orders WHERE order_id = 1001", False)
 
-    attempt(a, "analyst: can SELECT orders", "SELECT COUNT(*) FROM orders", True)
+    # After 10_views.sql the analyst is view-only.
+    for view in ("vw_order_summary", "vw_product_sales", "vw_customer_lifetime_value",
+                 "vw_pending_deliveries"):
+        attempt(a, f"analyst: can SELECT {view}", f"SELECT COUNT(*) FROM {view}", True)
+    attempt(a, "analyst: denied SELECT on base table orders", "SELECT COUNT(*) FROM orders", False)
+    attempt(a, "analyst: denied SELECT on base table customers", "SELECT email FROM customers", False)
+    attempt(a, "analyst: denied the clerk's updatable view",
+            "SELECT COUNT(*) FROM vw_active_products", False)
+    attempt(c, "clerk: can UPDATE price THROUGH vw_active_products",
+            "UPDATE vw_active_products SET price = price WHERE sku = 'PGN-KTL'", True)
+    attempt(c, "clerk: CHECK OPTION rejects deactivating via the view",
+            "UPDATE vw_active_products SET is_active = FALSE WHERE sku = 'PGN-KTL'", False,
+            deny_codes=(1369,))
     attempt(a, "analyst: denied INSERT",
             "INSERT INTO customers (full_name, email, phone) VALUES ('X', 'x@example.in', '9000000002')", False)
     attempt(a, "analyst: denied UPDATE", "UPDATE products SET price = 1 WHERE product_id = 1", False)
@@ -921,6 +979,8 @@ def main():
         check_set_operations(conn)
         print("Analytics checks:")
         check_analytics(conn)
+        print("View checks:")
+        check_views(conn)
         print("DCL checks:")
         check_dcl(cfg, db)
         print("Constraint checks:")
